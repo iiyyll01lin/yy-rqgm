@@ -209,7 +209,7 @@ export function Step2Diagnostic() {
               >
                 {SEQ_OPTIONS.map((s) => (
                   <option key={s} value={s}>
-                    {s.toLocaleString()} tokens
+                    {s.toLocaleString("en-US")} tokens
                   </option>
                 ))}
               </Select>
@@ -326,7 +326,7 @@ export function Step2Diagnostic() {
               <Stat
                 label="精度 / 並發"
                 value={`${reqDtype.toUpperCase()}`}
-                sub={`${reqConcurrency} 路 · ${reqSeqLen.toLocaleString()} tok`}
+                sub={`${reqConcurrency} 路 · ${reqSeqLen.toLocaleString("en-US")} tok`}
               />
             </div>
           </div>

@@ -5,12 +5,24 @@ import { Database, Radio, TriangleAlert } from "lucide-react";
 import { API_BASE, getSource, subscribeSource, type DataSource } from "@/lib/api";
 import { cn } from "@/lib/format";
 
+/**
+ * Server / first-hydration snapshot. The live-vs-mock source is a client-side
+ * detection (it depends on whether the backend actually answers), so the server
+ * render and the very first client render must both show the neutral "unknown"
+ * state. Returning a constant here — rather than reading the live source — keeps
+ * SSR and hydration byte-identical regardless of NEXT_PUBLIC_USE_MOCK, which is
+ * inlined into the client bundle at build time and could otherwise disagree with
+ * the server at runtime. useSyncExternalStore then swaps in the real source
+ * after hydration, without a mismatch.
+ */
+const getServerSource = (): DataSource => "unknown";
+
 /** Small pill showing whether the UI is talking to the live API or mock data. */
 export function SourceBanner({ className }: { className?: string }) {
   const source = React.useSyncExternalStore<DataSource>(
     subscribeSource,
     getSource,
-    getSource,
+    getServerSource,
   );
 
   if (source === "live") {

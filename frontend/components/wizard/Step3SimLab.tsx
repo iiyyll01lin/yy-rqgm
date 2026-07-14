@@ -167,7 +167,7 @@ export function Step3SimLab() {
 
             <Field
               label="脈絡長度 (Sequence Length)"
-              hint={`${simSeqLen.toLocaleString()} tokens`}
+              hint={`${simSeqLen.toLocaleString("en-US")} tokens`}
             >
               <Range
                 aria-label="sequence length"

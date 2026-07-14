@@ -376,7 +376,7 @@ export function mockDiagnose(
       constraint: "VRAM 記憶體容量",
       needed: `${total} GB`,
       have: `${memory_gb} GB`,
-      explanation_domain: `以「${domain}」的部署需求，模型權重加上 ${concurrency} 路並發、${seq_len.toLocaleString()} tokens 脈絡的 KV 快取共需約 ${total} GB，但目前硬體僅有 ${memory_gb} GB。這代表在產線尖峰或多工單同時湧入時會發生記憶體不足 (OOM)，導致 Agent 服務中斷。`,
+      explanation_domain: `以「${domain}」的部署需求，模型權重加上 ${concurrency} 路並發、${seq_len.toLocaleString("en-US")} tokens 脈絡的 KV 快取共需約 ${total} GB，但目前硬體僅有 ${memory_gb} GB。這代表在產線尖峰或多工單同時湧入時會發生記憶體不足 (OOM)，導致 Agent 服務中斷。`,
     });
   } else if (headroom < 2) {
     gaps.push({
@@ -726,7 +726,7 @@ python app.py
 | --- | --- |
 | Model | ${model.name} (${model.params_b}B, ${model.dtype_default}) |
 | Memory | ${tier.memory_gb} GB @ ${tier.bandwidth_tbs} TB/s |
-| Context | up to ${Math.min(model.context_len, 32768).toLocaleString()} tokens |
+| Context | up to ${Math.min(model.context_len, 32768).toLocaleString("en-US")} tokens |
 
 Physics is a hard boundary; domain fit is judged by the evolving evaluator.
 `;
