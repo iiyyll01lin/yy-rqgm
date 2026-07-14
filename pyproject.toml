@@ -1,0 +1,82 @@
+[project]
+name = "agentforge"
+version = "0.1.0"
+description = "AgentForge — a self-evolving AI-agent sizing/education platform on the AMD open-source ROCm stack."
+readme = { text = "See docs/ for the architecture blueprint. Backend package lives under backend/.", content-type = "text/markdown" }
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+authors = [{ name = "AgentForge" }]
+keywords = ["amd", "rocm", "llm", "sizing", "langgraph", "rqgm", "gepa", "agents"]
+
+# --- CORE dependencies -------------------------------------------------------
+# Deliberately installable on a *normal* (non-ROCm) machine. Nothing here pulls
+# in torch / quark / vLLM; the platform never imports those at runtime. Heavy
+# AMD/ROCm packages live in the optional [rocm] extra below.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "langgraph>=0.2.50",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+    "qdrant-client>=1.9",
+    "httpx>=0.27",
+    "pyyaml>=6.0",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# --- OPTIONAL ROCm / heavy extra --------------------------------------------
+# Install ONLY on AMD ROCm hardware (Ryzen AI / Radeon / Instinct). These are
+# NOT required to run the platform — the deterministic gatekeeper math is pure
+# python, and the inference client falls back to a deterministic MOCK.
+#
+# The torch wheel here resolves from PyPI for lockfile purposes. To get a real
+# ROCm build, install torch from AMD's extra-index-url (documented below):
+#
+#   # PyTorch ROCm build (Python 3.12, Linux only):
+#   uv pip install torch --extra-index-url https://download.pytorch.org/whl/rocm7.2
+#
+#   # AMD Quark pre-built ROCm wheel (optional; the PyPI universal wheel also works):
+#   uv pip install amd-quark --extra-index-url https://pypi.amd.com/quark/rocm72/simple
+#
+#   # Or sync the whole extra (uses default indexes; add --extra-index-url for ROCm builds):
+#   uv sync --extra rocm
+rocm = [
+    "amd-quark>=0.12",
+    "torch>=2.9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# The importable package lives in backend/ (imported as `backend.*`), which is
+# why we point hatchling at it explicitly (the dir name differs from the project
+# name). This makes `uv run uvicorn backend.app.main:app` work out of the box.
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
+
+[tool.uv]
+# Prefer the system/managed CPython 3.12 interpreter.
+package = true
+
+# AMD ROCm PyTorch index — declared for documentation / opt-in use. It is marked
+# `explicit` so it is ONLY consulted for packages that explicitly reference it;
+# it never interferes with normal (non-ROCm) resolution of the core deps.
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm7.2"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

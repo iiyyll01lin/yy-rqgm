@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual envs / uv
+.venv/
+venv/
+env/
+
+# Runtime / local state (checkpointers, sqlite, qdrant local storage)
+*.db
+*.sqlite
+*.sqlite3
+data/checkpoints/
+data/qdrant/
+data/*.db
+
+# RQGM evolution runtime artifacts (champion seed lives in backend/evaluator/rubric.xml)
+data/epoch_state.json
+data/rubric_history/*.xml
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Node (frontend is owned by another agent, but ignore just in case it lands here)
+node_modules/
+.next/
+
+# Logs
+*.log
+
+# Local env / secrets (templates like *.env.example stay tracked)
+.env
+.env.local
+.env.*.local
+!.env.example
