@@ -1,0 +1,29 @@
+id: process_optimization
+name: Closed-loop Process Optimization
+description: >-
+  Tune process setpoints (temperature, pressure, feed rate) against a physics
+  surrogate model to maximize yield/throughput within safety envelopes. Uses an
+  Optimizer agent proposing setpoints and an Evaluator agent scoring them on a
+  PyTorch/ROCm surrogate before any real actuation.
+needs:
+  - optimize
+  - optimization
+  - setpoint
+  - yield
+  - throughput
+  - control
+  - process
+  - tuning
+  - surrogate
+  - simulation
+  - closed loop
+nodes:
+  - state_estimator
+  - optimizer_agent
+  - surrogate_simulator
+  - evaluator_agent
+  - safety_envelope_check
+  - hitl_review
+notes: >-
+  Optimizer vs. Evaluator split (mirrors the anchor scenario). The
+  safety_envelope_check is a DETERMINISTIC hard gate — it never evolves.

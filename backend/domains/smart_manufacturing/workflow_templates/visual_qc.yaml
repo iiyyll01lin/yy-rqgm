@@ -1,0 +1,28 @@
+id: visual_qc
+name: Visual Quality Control (defect detection)
+description: >-
+  Inspect product images/video on the line, classify and localize defects,
+  and route borderline cases to a human. Must resist concept drift and avoid
+  reward-hacking the pass rate.
+needs:
+  - visual
+  - vision
+  - image
+  - camera
+  - defect
+  - inspection
+  - quality
+  - qc
+  - surface
+  - scratch
+  - classification
+nodes:
+  - frame_capture
+  - defect_classifier
+  - localizer
+  - confidence_gate
+  - hitl_review
+  - drift_monitor
+notes: >-
+  A drift_monitor guards against supplier/material changes silently shifting the
+  defect distribution; low-confidence cases escalate to HITL rather than auto-pass.

@@ -1,0 +1,239 @@
+"""Pydantic v2 request/response models mirroring the REST API contract exactly."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+# ---------------------------------------------------------------------------
+# session
+# ---------------------------------------------------------------------------
+class SessionResponse(BaseModel):
+    session_id: str
+
+
+# ---------------------------------------------------------------------------
+# catalog: tiers / models
+# ---------------------------------------------------------------------------
+class TierOut(BaseModel):
+    id: str
+    name: str
+    # 'class' is a reserved word; expose it via alias so JSON key is "class".
+    tier_class: str = Field(alias="class")
+    memory_gb: float
+    bandwidth_tbs: float
+    form_factor: str
+    has_npu: bool
+    tops_npu: float | None = None
+    price_usd_est: float | None = None
+    notes: str = ""
+
+    model_config = {"populate_by_name": True}
+
+
+class TiersResponse(BaseModel):
+    tiers: list[TierOut]
+
+
+class ModelOut(BaseModel):
+    id: str
+    name: str
+    params_b: float
+    n_layers: int
+    n_kv_heads: int
+    head_dim: int
+    hidden: int
+    context_len: int
+    dtype_default: str
+
+
+class ModelsResponse(BaseModel):
+    models: list[ModelOut]
+
+
+# ---------------------------------------------------------------------------
+# domain
+# ---------------------------------------------------------------------------
+class DomainRequest(BaseModel):
+    domain: str
+    description: str
+    workload_type: str | None = None
+
+
+class MatchedTemplate(BaseModel):
+    id: str
+    name: str
+    description: str
+    needs: list[str] = Field(default_factory=list)
+
+
+class DomainResponse(BaseModel):
+    matched_templates: list[MatchedTemplate]
+    recommended_template_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# diagnose
+# ---------------------------------------------------------------------------
+class CustomHardware(BaseModel):
+    memory_gb: float
+    bandwidth_tbs: float
+
+
+class CurrentHardware(BaseModel):
+    tier_id: str | None = None
+    custom: CustomHardware | None = None
+
+
+class Requirements(BaseModel):
+    model_id: str
+    seq_len: int = 4096
+    concurrency: int = 1
+    dtype: str | None = None
+
+
+class DiagnoseRequest(BaseModel):
+    current_hardware: CurrentHardware
+    requirements: Requirements
+
+
+class VramBreakdownModel(BaseModel):
+    weights: float
+    kv_cache: float
+    activations: float
+    overhead: float
+
+
+class DiagnoseReport(BaseModel):
+    vram_total_gb: float
+    vram_breakdown: VramBreakdownModel
+    tokens_per_s_est: float
+    headroom_gb: float
+
+
+class Gap(BaseModel):
+    constraint: str
+    needed: float
+    have: float
+    explanation_domain: str
+
+
+class DiagnoseResponse(BaseModel):
+    feasible: bool
+    report: DiagnoseReport
+    gaps: list[Gap] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# simulate
+# ---------------------------------------------------------------------------
+class SimulateRequest(BaseModel):
+    model_id: str
+    seq_len: int = 4096
+    population: int = 1
+    dtype: str | None = None
+    prefix_ratio: float | None = 0.0
+    tier_ids: list[str] | None = None
+
+
+class PerTierResult(BaseModel):
+    tier_id: str
+    feasible: bool
+    vram_total_gb: float
+    vram_breakdown: VramBreakdownModel
+    tokens_per_s_est: float
+    max_population: int
+    kv_savings_from_prefix_pct: float
+
+
+class SimulateResponse(BaseModel):
+    per_tier: list[PerTierResult]
+
+
+# ---------------------------------------------------------------------------
+# evaluate
+# ---------------------------------------------------------------------------
+class EvaluateRequest(BaseModel):
+    architecture: str
+    domain: str | None = None
+
+
+class RedFlagModel(BaseModel):
+    criterion: str
+    severity: str
+    detail: str
+
+
+class EvaluateResponse(BaseModel):
+    deficit_score: float
+    red_flags: list[RedFlagModel] = Field(default_factory=list)
+    reasoning: str = ""
+    epoch_id: int = 0
+
+
+# ---------------------------------------------------------------------------
+# export
+# ---------------------------------------------------------------------------
+class ExportRequest(BaseModel):
+    target_tier_id: str
+    model_id: str
+    template_id: str | None = None
+    # optional sizing knobs (sensible defaults keep the contract minimal)
+    seq_len: int = 8192
+    concurrency: int = 1
+    dtype: str | None = None
+    prefix_ratio: float = 0.0
+
+
+class ExportResponse(BaseModel):
+    tco_markdown: str
+    deploy_files: dict[str, str]
+
+
+# ---------------------------------------------------------------------------
+# feedback
+# ---------------------------------------------------------------------------
+class FeedbackRequest(BaseModel):
+    rating: int
+    correct: bool | None = None
+    notes: str = ""
+
+
+class FeedbackResponse(BaseModel):
+    ok: bool
+    stored_as: str = "ground_truth_anchor"
+
+
+# ---------------------------------------------------------------------------
+# admin / epoch
+# ---------------------------------------------------------------------------
+class EpochProposeResponse(BaseModel):
+    challenger_id: str
+    rubric_diff: str
+    metrics: dict
+
+
+class EpochApproveRequest(BaseModel):
+    approve: bool
+
+
+class EpochApproveResponse(BaseModel):
+    epoch_id: int
+    applied: bool
+
+
+# ---------------------------------------------------------------------------
+# supplementary: LangGraph orchestration (exposes the b4 graph via API)
+# ---------------------------------------------------------------------------
+class OrchestrateRequest(BaseModel):
+    need: str | None = None
+    model_id: str | None = None
+    tier_id: str | None = None
+    seq_len: int = 4096
+    concurrency: int = 1
+    dtype: str | None = None
+    prefix_ratio: float = 0.0
+
+
+class OrchestrateResumeRequest(BaseModel):
+    approved: bool
+    notes: str = ""

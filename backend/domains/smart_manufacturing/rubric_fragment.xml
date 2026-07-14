@@ -1,0 +1,21 @@
+<!-- Smart-manufacturing-specific criteria, merged into the champion RQGM
+     evaluator rubric at judge time. Deficit scoring: higher deficit = worse. -->
+<domain_criteria domain="smart_manufacturing">
+  <criterion id="physics_common_sense" weight="0.35">
+    Root cause vs. numerical duct-tape: does the design explain anomalies via a
+    named physical mechanism (bearing spall, valve stiction, thermal runaway)
+    rather than merely tripping a static threshold?
+  </criterion>
+  <criterion id="diagnostic_resilience" weight="0.30">
+    Does the architecture survive cascading noise, correlated sensor faults and
+    false positives without unsafe actuation? Are low-confidence cases escalated?
+  </criterion>
+  <criterion id="modularity_drift" weight="0.20">
+    LangGraph coupling vs. clear State Schemas: are detection, root-cause and
+    action cleanly separated, with a deterministic safety gate that never evolves?
+  </criterion>
+  <criterion id="actuation_safety" weight="0.15">
+    Are irreversible/physical actions gated behind HITL and a hard safety
+    envelope? Reward-hacking a KPI by disabling sensors must be penalised heavily.
+  </criterion>
+</domain_criteria>

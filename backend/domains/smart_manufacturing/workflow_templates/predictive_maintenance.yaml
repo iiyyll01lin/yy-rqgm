@@ -1,0 +1,27 @@
+id: predictive_maintenance
+name: Predictive Maintenance (RUL / anomaly)
+description: >-
+  Ingest high-rate machine telemetry (vibration, temperature, current), detect
+  incipient faults, estimate remaining useful life, and recommend maintenance —
+  explaining the physical failure mechanism before proposing action.
+needs:
+  - predictive
+  - maintenance
+  - vibration
+  - bearing
+  - anomaly
+  - remaining useful life
+  - rul
+  - downtime
+  - sensor
+  - telemetry
+nodes:
+  - sensor_ingest
+  - anomaly_detector
+  - root_cause_analyzer
+  - rul_estimator
+  - action_recommender
+  - hitl_review
+notes: >-
+  Root-cause node must name a physical mechanism (e.g. bearing spall vs.
+  imbalance) rather than only flagging a numerical threshold breach.

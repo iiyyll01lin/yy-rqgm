@@ -1,0 +1,9 @@
+id: smart_manufacturing
+name: Smart Manufacturing / Factory QC
+description: >-
+  Industrial anomaly detection, predictive maintenance, visual quality control
+  and closed-loop process optimization for factory environments. Agents must
+  reason about physical mechanisms (root cause), survive noisy/adversarial
+  sensor conditions, and never propose unsafe or irreversible actuator commands
+  without human review. Open-source PyTorch physics surrogate models on ROCm
+  stand in for a proprietary simulator (e.g. Omniverse).
