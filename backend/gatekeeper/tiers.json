@@ -1,0 +1,89 @@
+{
+  "_comment": "AMD hardware spec DB for the Static Gatekeeper. Values are approximate and vendor-published where possible; bandwidth in TB/s (1 TB/s = 1e12 B/s), memory in GB (decimal, 1 GB = 1e9 B). Prices are rough street/list estimates in USD and vary widely. Cited inline in 'notes'.",
+  "tiers": [
+    {
+      "id": "ryzen_ai_max_395",
+      "name": "Ryzen AI Max+ 395 (Strix Halo)",
+      "class": "ryzen_ai",
+      "memory_gb": 128.0,
+      "bandwidth_tbs": 0.256,
+      "form_factor": "APU / mini-PC (unified LPDDR5X)",
+      "has_npu": true,
+      "tops_npu": 50.0,
+      "price_usd_est": 2000.0,
+      "notes": "Up to 128GB unified LPDDR5X-8000 shared CPU/GPU/NPU; ~256-bit bus -> ~0.256 TB/s. XDNA2 NPU ~50 TOPS (INT8). Great capacity, low bandwidth => memory-bound decode is slow. Tier 1 'real run' target via Lemonade. Price is a whole-system estimate."
+    },
+    {
+      "id": "rx_7800_xt",
+      "name": "Radeon RX 7800 XT",
+      "class": "radeon",
+      "memory_gb": 16.0,
+      "bandwidth_tbs": 0.624,
+      "form_factor": "PCIe consumer dual-slot",
+      "has_npu": false,
+      "tops_npu": null,
+      "price_usd_est": 500.0,
+      "notes": "16GB GDDR6, 256-bit, ~624 GB/s. RDNA3, ROCm-capable. Entry Radeon tier."
+    },
+    {
+      "id": "rx_7900_xtx",
+      "name": "Radeon RX 7900 XTX",
+      "class": "radeon",
+      "memory_gb": 24.0,
+      "bandwidth_tbs": 0.96,
+      "form_factor": "PCIe consumer dual-slot",
+      "has_npu": false,
+      "tops_npu": null,
+      "price_usd_est": 999.0,
+      "notes": "24GB GDDR6, 384-bit, ~960 GB/s. RDNA3 flagship consumer; strong ROCm 'real run' target for Tier 2."
+    },
+    {
+      "id": "w7800",
+      "name": "Radeon PRO W7800",
+      "class": "radeon_pro",
+      "memory_gb": 32.0,
+      "bandwidth_tbs": 0.576,
+      "form_factor": "PCIe workstation dual-slot",
+      "has_npu": false,
+      "tops_npu": null,
+      "price_usd_est": 2499.0,
+      "notes": "32GB GDDR6, 256-bit, ~576 GB/s. Workstation-class ECC-capable Radeon PRO."
+    },
+    {
+      "id": "w7900",
+      "name": "Radeon PRO W7900",
+      "class": "radeon_pro",
+      "memory_gb": 48.0,
+      "bandwidth_tbs": 0.864,
+      "form_factor": "PCIe workstation dual-slot",
+      "has_npu": false,
+      "tops_npu": null,
+      "price_usd_est": 3999.0,
+      "notes": "48GB GDDR6, 384-bit, ~864 GB/s. Largest single-card workstation Radeon PRO; Tier 3 'real run' target."
+    },
+    {
+      "id": "mi300x",
+      "name": "Instinct MI300X",
+      "class": "instinct",
+      "memory_gb": 192.0,
+      "bandwidth_tbs": 5.3,
+      "form_factor": "OAM module (8-GPU UBB node)",
+      "has_npu": false,
+      "tops_npu": null,
+      "price_usd_est": 15000.0,
+      "notes": "192GB HBM3, ~5.3 TB/s. Datacenter CDNA3. Tier 4 = SIMULATED here via gatekeeper math + reduced-population loop (no physical device). Huge VRAM enables persistent negative-result memory + large MCTS/population batches. Price per-GPU estimate."
+    },
+    {
+      "id": "mi325x",
+      "name": "Instinct MI325X",
+      "class": "instinct",
+      "memory_gb": 256.0,
+      "bandwidth_tbs": 6.0,
+      "form_factor": "OAM module (8-GPU UBB node)",
+      "has_npu": false,
+      "tops_npu": null,
+      "price_usd_est": 20000.0,
+      "notes": "256GB HBM3E, ~6.0 TB/s. Datacenter CDNA3, larger/faster memory than MI300X. Tier 4 SIMULATED. Price per-GPU estimate."
+    }
+  ]
+}
