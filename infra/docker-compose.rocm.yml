@@ -1,0 +1,65 @@
+# AgentForge ROCm profile — Tier-4 SIMULATION vLLM stack.
+#
+#   docker compose -f infra/docker-compose.rocm.yml up --build
+#
+# Runs a real ROCm vLLM server (Radeon / Radeon PRO / Instinct). On a machine
+# WITHOUT a physical MI300X/MI325X this is how the "Tier-4 simulation" story is
+# grounded: the same open-source serving stack you would deploy at scale, driven
+# by the deterministic gatekeeper's reduced-population loop. On actual Radeon
+# hardware it genuinely serves.
+#
+# Set the served model via VLLM_MODEL (must be pullable / mounted).
+services:
+  vllm:
+    image: rocm/vllm-dev:main
+    container_name: agentforge-vllm
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render
+    ipc: host
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      - VLLM_ROCM_USE_AITER=1
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    command: >
+      vllm serve ${VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}
+      --enable-prefix-caching
+      --max-model-len ${VLLM_MAX_LEN:-8192}
+      --port 8000
+
+  qdrant:
+    image: qdrant/qdrant
+    container_name: agentforge-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  backend:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: agentforge-backend
+    depends_on:
+      - qdrant
+      - vllm
+    ports:
+      - "8010:8000"
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      # vLLM's OpenAI-compatible API (used by exported deploy apps).
+      - OPENAI_BASE_URL=http://vllm:8000/v1
+      # AgentForge's own inference client can also target it (OpenAI-compatible):
+      - LEMONADE_BASE_URL=http://vllm:8000/v1
+
+volumes:
+  qdrant_storage:

@@ -1,0 +1,16 @@
+.venv/
+**/__pycache__/
+*.pyc
+.git/
+.pytest_cache/
+.ruff_cache/
+# owned by other agents / not needed in the backend image
+frontend/
+docs/
+# runtime state
+data/checkpoints/
+data/qdrant/
+data/rubric_history/
+data/epoch_state.json
+*.db
+*.sqlite*
