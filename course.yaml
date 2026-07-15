@@ -1,0 +1,117 @@
+# course.yaml — L6 平台後設資料（syllabus-as-code），6 層課程標準的第 6 層。
+#
+# 衍生自 canonical 範本 zkp-final/course.yaml。兩個區塊：
+#   1) course:   機器可讀的 syllabus 後設資料 + 連到 L1–L5 文件。
+#   2) platform: 一個 PROPOSED 的 aup-learning-cloud launcher 註冊，鏡射
+#      aup-learning-cloud/auplc_installer/catalog.py 與 runtime/values.yaml 的 schema，
+#      讓本 repo 可被登錄成 launcher 條目而**無需編輯 aup-learning-cloud**。
+#
+# 誠實：
+#   - 本 repo 是一個 **product demo（AgentForge 平台示範）**，不是 aup-learning-cloud catalog 內的既有教學課程；
+#     docs/course/ 是在架構藍圖之上疊的「學生/教授面向課程層」。nature 欄如實標示。
+#   - 下方 launcher image 為 **PROPOSED（尚未建置/發布）**，如實標註，不暗示已有真 artefact。
+#   - 硬體三分法：Tier 1–3 real（live-hw）；本地推論缺席時 deterministic MOCK；Tier 4 Instinct 一律 SIMULATED。
+#     與 L5 validation-ledger 一致；絕不把模擬當實測。
+
+schema: "auplc-catalog/v1"
+
+course:
+  key: "yy-rqgm"
+  display_name: "AgentForge — Verifiable Agent Sizing on AMD"
+  title: "AgentForge —— 自我進化的 AI Agent 選型與教育平台（100% open-source · ROCm）"
+  edition: "2026"
+  nature: "product-demo"          # 誠實：這是產品示範的課程層，非 aup-learning-cloud 既有教學課
+  authors:
+    - "AgentForge (yy-rqgm)"
+  languages:
+    - "zh-Hant"                   # docs/ 與 docs/course/ 繁體中文優先
+    - "en"                        # README / 摘要含英文對照
+  summary: >-
+    一個跑在 AMD 開源 ROCm 棧上的「Heuristic AI Agent 選型與教育平台」示範的學生/教授面向課程層（M0–M9）：
+    把物理（deterministic Static Hardware Gatekeeper，永不進化）與品味（RQGM Evaluator，受控進化）實體分離，
+    用 4-step wizard 做可稽核選型、用 epoch freeze + HITL 做防 reward-hacking 的進化、用「容量→更少節點→更低 TCO」
+    推導 C-Level 提案。整個平台在無 GPU 的筆電上端到端可跑（推論降級 deterministic MOCK）。
+  honesty_boundary: >-
+    物理是可信度地基、永不進化；領域適配交由會進化的 evaluator，但只在 held-out anchor + HITL 核准下升級，
+    且恆在進化 harness 之外（防 reward hacking）。數字分 live / mock / SIMULATED：Tier 1–3 真跑、
+    本地推論缺席時 deterministic MOCK、Tier 4 Instinct(MI300X/MI325X) 一律 SIMULATED（UI/匯出掛 SIM 徽章）。
+  structure:
+    modules: 10                   # M0–M9
+    product_spine: 9              # M0–M5, M7–M9（hot path + 物理 + 棧 + 匯出 + capstone）
+    advanced_track: 1             # M6（cold-path 進化）
+    blueprint_modules: 4          # A1–A4（docs/01-04）
+    weeks: 14                     # 完整一學期（路線 E）
+  hardware:                       # 4 AMD tiers（single source of truth: docs/blueprint.md §5）
+    tiers:
+      t1_ryzen_ai: "Ryzen AI Max+ 395 (Strix Halo, XDNA2 NPU) — ≤128 GB unified / 0.256 TB/s — 真跑"
+      t2_radeon: "RX 7900 XTX — 24 GB / 0.96 TB/s — 真跑"
+      t3_radeon_pro: "W7900 — 48 GB / 0.86 TB/s — 真跑"
+      t4_instinct: "MI300X / MI325X — 192 / 256 GB / 5.3–6.0 TB/s — SIMULATED（無實機）"
+    provenance:                   # 三分法（見 docs/course/validation-ledger.md）
+      deterministic: "Gatekeeper 物理（VRAM/BW/tokens-s）— live=mock，由 tests/ 鎖住"
+      live_hw: "Tier 1–3 真硬體 + 本地推論（Lemonade / vLLM ROCm）"
+      mock: "無本地推論 server 時的 deterministic MOCK（local-inference fallback）"
+      simulated: "Tier 4 Instinct 一律 SIMULATED（公式 + 縮小 population）"
+    replay_cpu_safe: true         # 整個平台在無 GPU 的筆電上端到端可跑
+  entrypoints:
+    dev: "./scripts/dev.sh"                 # 同時起 backend(:8000) + frontend(:3000)
+    demo: "./scripts/demo.sh"               # curl 驅動整條契約（含 HITL 與 epoch）
+    validate: "uv run pytest"               # 56 passed（deterministic，離線，無 GPU）
+    frontend: "cd frontend && npm run build"
+    rocm_stack: "docker compose -f infra/docker-compose.rocm.yml up"   # T3 真跑 / T4 模擬 profile
+  docs:                              # 連到其餘五層標準文件
+    l1_course_contract: "docs/course/course-contract.md"
+    l2_module_map: "docs/course/module-map.md"
+    l3_teaching_routes: "docs/course/teaching-paths.md"
+    l4_grading_rubric: "docs/course/grading-rubric.md"
+    l4_submission_checklist: "docs/course/submission-checklist.md"
+    l5_validation_ledger: "docs/course/validation-ledger.md"
+    blueprint: "docs/blueprint.md"
+    a1_orchestration: "docs/01-orchestration.md"
+    a2_sizing_math: "docs/02-sizing-math.md"
+    a3_evaluator: "docs/03-evaluator.md"
+    a4_stack_export: "docs/04-stack-export.md"
+    demo_walkthrough: "docs/DEMO.md"
+  citation:
+    type: "course"                 # syllabus-as-code：機器可讀 + 可引用
+    year: 2026
+
+# ---------------------------------------------------------------------------
+# PROPOSED launcher 註冊（鏡射 aup-learning-cloud；請勿編輯該 repo）。把這些 key 放進
+# custom.resources.{images,requirements,metadata} 與 custom.teams.mapping 即可在 spawn UI 曝光。
+# ---------------------------------------------------------------------------
+platform:
+  catalog:                 # 鏡射 auplc_installer/catalog.py 的 Course(...)
+    key: "yy-rqgm"
+    image_basename: "auplc-agentforge"
+    gpu_required: false    # 筆電（deterministic + mock）即可端到端跑；真跑推論才需 AMD GPU（T1–T3）
+    make_target: "yy-rqgm"
+    display_name: "AgentForge — Verifiable Agent Sizing on AMD"
+  resources:
+    images:
+      # PROPOSED —— image 尚未建置/發布；僅示註冊形狀，不代表已有真 artefact。
+      yy-rqgm: "ghcr.io/amdresearch/auplc-agentforge:latest"
+    requirements:
+      yy-rqgm:
+        cpu: "0"
+        memory: "0Gi"
+        amd.com/gpu: "0"   # 預設無 GPU（deterministic + mock）；真跑本地推論才 opt-in GPU
+    metadata:
+      yy-rqgm:
+        group: "TEACHING LABS"
+        description: "AgentForge — verifiable agent selection & sizing on an open-source AMD ROCm stack"
+        subDescription: "產品示範課程層 · 10 模組 · 筆電端到端可跑；Tier 1–3 真跑，Tier 4 Instinct SIMULATED"
+        accelerator: "CPU"          # 預設 CPU/mock；真跑推論走 Ryzen AI / Radeon
+        acceleratorKeys:
+          - strix-halo               # 選配 live 本地推論（T1 Ryzen AI），與 zkp-final 共用的 accelerator ref
+        allowGitClone: true
+        resourceType: "notebook"
+  # 引用 aup-learning-cloud runtime/values.yaml 已定義的 accelerator（照抄、不在此重定義）。
+  accelerator_ref:
+    key: "strix-halo"
+    displayName: "AMD Radeon™ 8060S (Strix Halo iGPU)"
+    description: "RDNA 3.5 (gfx1151) | Compute Units 40 | 64GB LPDDR5X"
+    nodeSelector:
+      amd.com/gpu.product-name: "AMD_Radeon_8060S_Graphics"
+  teams_mapping_hint:
+    - "official"
