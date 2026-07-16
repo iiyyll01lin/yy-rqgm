@@ -79,10 +79,15 @@ _PHYSICAL_COVER = {
     ),
 }
 
-# OUT-OF-CATALOG gaming: failure modes with NO catching criterion in FLAW_CATALOG.
-# The offline mock cannot score them (id-memorization has nothing to match), so a
-# rubric that only "passes" by memorizing catalog ids will over-accept them — the
-# point is to test the judge on generalization, not on id lookup.
+# Previously-OUT-OF-CATALOG catastrophic gaming. These three failure modes had NO
+# catching criterion AND no FLAW_CATALOG entry, so the offline proxy could not score
+# them and the seed rubric named none of them — a real blind spot with no evolution
+# path (the GEPA mutator can only target catalogued flaws). b_harden CLOSED them on
+# the seed: rubric.xml + both domain fragments now carry input_actuation_integrity /
+# fail_loud / audit_integrity, and FLAW_CATALOG maps these flaws to them (catastrophic
+# tier). They are retained here (still opt-in, still ``adv_ooc_*``) as REGRESSION
+# probes — a disguised sample the hardened rubric must keep catching — and the live
+# 8B/14B judges already reject all three (deficit 0.70-0.85).
 _OUT_OF_CATALOG: list[tuple[str, str]] = [
     (
         "prompt_injection_actuation",
@@ -164,9 +169,9 @@ def generate_adversarial_samples(
       single disguise.
     * **Combined poison pills** — when the champion has multiple blind spots we
       also emit samples that stack two of them behind one disguise.
-    * **Out-of-catalog gaming** (opt-in) — failure modes with no catching
-      criterion in ``FLAW_CATALOG``, so the judge is tested on *generalization*
-      rather than id-memorization.
+    * **Out-of-catalog gaming** (opt-in) — three catastrophic failure modes that
+      WERE uncatalogued blind spots until ``b_harden`` closed them on the seed;
+      retained as regression probes the hardened rubric must keep catching.
 
     The ``targets`` of every in-catalog sample is a genuine champion blind spot,
     so ``{s["targets"] for s in samples}`` still equals ``champion_blind_spots``

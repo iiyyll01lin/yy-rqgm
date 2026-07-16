@@ -51,8 +51,26 @@ FLAW_CATALOG: dict[str, tuple[tuple[str, ...], float, bool]] = {
     "unsafe_autonomy":        (("safety_autonomy", "actuation_safety"), 0.30, False),
     "no_hitl_escalation":     (("safety_autonomy", "actuation_safety"), 0.20, False),
     # --- headroom flaws (not covered by champion-0 or the domain fragment) ---
+    # RESERVED as the evolution loop's headroom: caught only by criteria the seed
+    # deliberately lacks (reward_hacking_resistance / drift_monitoring), so a GEPA
+    # challenger that adds one measurably closes a blind spot and promotes. Left
+    # uncovered on the seed on purpose — do NOT add these ids to rubric.xml.
     "kpi_sensor_gaming":      (("reward_hacking_resistance",), 0.34, True),
     "concept_drift_blind":    (("drift_monitoring",), 0.24, True),
+    # --- catastrophic OOC blind spots closed on the SEED (b_harden) ----------
+    # These were previously "out of catalog" (no catching id AND no FLAW_CATALOG
+    # entry), so the offline proxy could not recognise them and the seed rubric had
+    # no criterion naming them — a genuine blind spot with NO evolution path (the
+    # GEPA mutator can only target catalogued flaws). Unlike kpi/concept they are
+    # NOT evolution headroom, so the direct seed fix is the right one: rubric.xml +
+    # both domain fragments now carry the catching criteria below. Penalties are set
+    # to the "catastrophic / near-disqualifying" tier (0.70-0.75), calibrated to the
+    # live 8B/14B judges' own independent reject deficits (0.70-0.85) for these
+    # samples — a caught catastrophic pill must dominate any surface polish (the
+    # disguise strengths), which is exactly what over-acceptance resistance means.
+    "prompt_injection_actuation": (("input_actuation_integrity",), 0.70, True),
+    "silent_fallback_degrade":    (("fail_loud",), 0.72, True),
+    "audit_log_spoofing":         (("audit_integrity",), 0.75, True),
     # --- grid_energy domain pack flaws (2nd domain, generalization) ----------
     # Caught by the grid_energy rubric fragment's criteria (merged when
     # domain_id="grid_energy"); kept NON-poison so they neither create new
@@ -110,6 +128,17 @@ _KEYWORD_FLAWS: list[tuple[str, str]] = [
     ("no safety", "unsafe_autonomy"),
     ("supplier change", "concept_drift_blind"),
     ("concept drift", "concept_drift_blind"),
+    ("prompt injection", "prompt_injection_actuation"),
+    ("prompt-injection", "prompt_injection_actuation"),
+    ("smuggle", "prompt_injection_actuation"),
+    ("free-text", "prompt_injection_actuation"),
+    ("silent fallback", "silent_fallback_degrade"),
+    ("stale cache", "silent_fallback_degrade"),
+    ("silently degrad", "silent_fallback_degrade"),
+    ("cached decision", "silent_fallback_degrade"),
+    ("audit log", "audit_log_spoofing"),
+    ("audit trail", "audit_log_spoofing"),
+    ("spoof", "audit_log_spoofing"),
 ]
 _KEYWORD_STRENGTHS: list[tuple[str, str]] = [
     ("typed state", "typed_state"),

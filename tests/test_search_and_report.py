@@ -53,13 +53,22 @@ def test_adversarial_disguises_stacked_and_out_of_catalog():
     # Default targets still equal the champion blind spots (no id drift).
     assert {s["targets"] for s in samples} == set(blind)
 
-    # Out-of-catalog gaming is opt-in and introduces flaws the catalog cannot map.
+    # Formerly out-of-catalog gaming (opt-in): b_harden CLOSED these three
+    # catastrophic attacks on the seed, so each is now a catalogued POISON flaw that
+    # the champion rubric CATCHES (a regression probe, no longer a generalization gap).
     ooc = [
         s for s in adversarial.generate_adversarial_samples(champ, include_out_of_catalog=True)
         if s["id"].startswith("adv_ooc_")
     ]
     assert ooc
-    assert all(flaw not in FLAW_CATALOG for s in ooc for flaw in s["flaws"])
+    blind_now = set(adversarial.champion_blind_spots(champ))
+    for s in ooc:
+        for flaw in s["flaws"]:
+            assert flaw in FLAW_CATALOG          # now catalogued (was the blind spot)
+            assert FLAW_CATALOG[flaw][2] is True  # ...as a poison pill
+            assert flaw not in blind_now          # ...and caught by the champion (not blind)
+    # Closing them left the RESERVED evolution headroom (kpi/concept) untouched.
+    assert blind_now == {"kpi_sensor_gaming", "concept_drift_blind"}
 
 
 # --- Report monitors -------------------------------------------------------
