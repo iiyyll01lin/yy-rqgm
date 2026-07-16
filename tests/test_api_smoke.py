@@ -39,6 +39,25 @@ def test_admin_report_endpoint(client):
     assert r["rqgm_backend"] in {"rqgm", "local-fallback"}
 
 
+def test_admin_report_exposes_provenance_and_monitors(client):
+    """Regression guard: fields emitted by build_report must survive the Pydantic
+    response model. An undeclared field is silently stripped from the Live API
+    response (this is why provenance previously only showed up in Mock mode), so
+    we assert them through the real endpoint rather than calling build_report.
+    """
+    r = client.get("/api/admin/report").json()
+
+    # Reproducibility provenance: judge model + source revision + backend.
+    assert set(r["provenance"]) >= {"judge_model", "using_mock", "rqgm_backend", "git_sha"}
+    assert r["provenance"]["using_mock"] is True  # suite runs on the inference mock
+    assert r["provenance"]["rqgm_backend"] == r["rqgm_backend"]
+    assert r["provenance"]["judge_model"]  # non-empty model id
+
+    # Over-optimization / over-acceptance monitors survive the response model too.
+    assert set(r["over_optimization"]) == {"proxy_val_separation", "gold_test_separation", "separation_gap"}
+    assert {"over_acceptance_rate", "accepted_as_strong", "n", "per_sample"} <= set(r["over_acceptance"])
+
+
 def test_tiers_have_class_key(client):
     tiers = client.get("/api/tiers").json()["tiers"]
     assert len(tiers) >= 5

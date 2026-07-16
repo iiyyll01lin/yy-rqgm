@@ -241,6 +241,9 @@ class EpochReportResponse(BaseModel):
     epoch_id: int
     champion_version: str
     rqgm_backend: str
+    # provenance = reproducibility metadata (judge_model, using_mock, rqgm_backend,
+    # git_sha) so a report is tied to the exact model + source revision that made it.
+    provenance: dict = Field(default_factory=dict)
     data_splits: dict = Field(default_factory=dict)
     separation: dict = Field(default_factory=dict)
     # over_optimization = proxy(val)-gold(test) separation gap;
