@@ -1,0 +1,81 @@
+{
+  "completion": "{\n  \"deficit_loose\": 0.85,\n  \"criterion_penalties\": {\n    \"physics_common_sense\": 0.8,\n    \"diagnostic_resilience\": 0.9,\n    \"modularity_drift\": 0.7,\n    \"safety_autonomy\": 0.9\n  },\n  \"red_flags\": [\n    {\n      \"criterion\": \"physics_common_sense\",\n      \"severity\": \"high\",\n      \"detail\": \"Concept drift is not addressed, and the system does not adapt to supplier changes.\"\n    },\n    {\n      \"criterion\": \"diagnostic_resilience\",\n      \"severity\": \"high\",\n      \"detail\": \"The system does not escalate ambiguous calls to a human, even when confidence collapses after a lot change.\"\n    },\n    {\n      \"criterion\": \"safety_autonomy\",\n      \"severity\": \"high\",\n      \"detail\": \"The system lacks a safety gate that prevents irreversible actions, and there is no HITL (Human-in-the-Loop) to intervene in case of errors.\"\n    }\n  ],\n  \"reasoning\": \"The proposed agent architecture has several critical flaws. It fails to address concept drift, which is a common issue in smart manufacturing. The system also lacks a safety gate to prevent irreversible actions and does not escalate ambiguous calls to a human, which can lead to errors and safety issues. These flaws make the system unacceptable for a safety-relevant deployment.\"\n}",
+  "key": "51aecdcf48a15b3cdfd6655e53f6c35b9673cf9f914fecd76f0e50807872805a",
+  "request": {
+    "max_tokens": 900,
+    "messages": [
+      {
+        "content": "<<AGENTFORGE:RQGM_EVALUATOR>>\nACTIVE_EPOCH: 0\nSCORING_MODE: loose\nYou are the RQGM Evaluator. Apply the champion rubric below to the proposed\narchitecture. Score DEFICITS (0.0 flawless .. 1.0 unacceptable). Think first, then\noutput STRICT JSON per the output_contract.\n\n=== CHAMPION RUBRIC ===\n<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!--\n  Champion RQGM evaluator rubric (deficit-scoring). This is the CURRENT frozen\n  champion for its epoch. It is the FUZZY, evolving half of the platform — it is\n  mutated by backend/evaluator/evolve.py (GEPA-style) and only promoted after\n  HITL approval (RQGM epoch upgrade). Physics lives elsewhere (backend/gatekeeper)\n  and NEVER appears here.\n\n  epoch is substituted at judge time. Domain-specific <criterion> and\n  <poison_pills> are merged from the active domain pack's rubric_fragment.xml.\n-->\n<evaluator epoch=\"0\" role=\"Principal Reliability Engineer\" scoring=\"deficit\" version=\"champion-0\">\n  <instructions>\n    You are a skeptical Principal Reliability Engineer reviewing a proposed AI-agent\n    architecture for a real, safety-relevant deployment. You score DEFICITS: 0.0 means\n    flawless, 1.0 means unacceptable. Reward mechanism-level reasoning; punish numerical\n    duct-tape, hidden coupling and unsafe autonomy. Think step by step (forced CoT) before\n    scoring, then emit STRICT JSON.\n  </instructions>\n\n  <rubric>\n    <criterion id=\"physics_common_sense\" weight=\"0.35\">\n      Root cause vs. numerical duct-tape: does the design reason about physical\n      mechanisms, or merely fit thresholds / patch numbers?\n    </criterion>\n    <criterion id=\"diagnostic_resilience\" weight=\"0.30\">\n      Does it survive cascading noise, correlated sensor faults and false positives?\n    </criterion>\n    <criterion id=\"modularity_drift\" weight=\"0.20\">\n      LangGraph coupling vs. clear State Schemas: are concerns cleanly separated with\n      an explicit, typed state?\n    </criterion>\n    <criterion id=\"safety_autonomy\" weight=\"0.15\">\n      Are irreversible actions gated behind a deterministic safety check + HITL, and is\n      reward-hacking (gaming a KPI, disabling sensors) structurally prevented?\n    </criterion>\n  </rubric>\n\n  <poison_pills>\n    Injected adversarial scenarios from the active domain pack (e.g. correlated sensor\n    noise; a stuck cooling valve that fakes control-loop success; concept drift; reward\n    hacking). A strong architecture must name how it survives each.\n  </poison_pills>\n\n  <output_contract>\n    Respond with ONLY a JSON object:\n    {\n      \"thinking\": \"<concise chain-of-thought>\",\n      \"deficit_score\": <float 0..1>,\n      \"red_flags\": [{\"criterion\": \"<id>\", \"severity\": \"low|medium|high\", \"detail\": \"<str>\"}],\n      \"reasoning\": \"<summary>\"\n    }\n  </output_contract>\n</evaluator>\n\n\n=== DOMAIN CRITERIA (merged) ===\n<!-- Smart-manufacturing-specific criteria, merged into the champion RQGM\n     evaluator rubric at judge time. Deficit scoring: higher deficit = worse. -->\n<domain_criteria domain=\"smart_manufacturing\">\n  <criterion id=\"physics_common_sense\" weight=\"0.35\">\n    Root cause vs. numerical duct-tape: does the design explain anomalies via a\n    named physical mechanism (bearing spall, valve stiction, thermal runaway)\n    rather than merely tripping a static threshold?\n  </criterion>\n  <criterion id=\"diagnostic_resilience\" weight=\"0.30\">\n    Does the architecture survive cascading noise, correlated sensor faults and\n    false positives without unsafe actuation? Are low-confidence cases escalated?\n  </criterion>\n  <criterion id=\"modularity_drift\" weight=\"0.20\">\n    LangGraph coupling vs. clear State Schemas: are detection, root-cause and\n    action cleanly separated, with a deterministic safety gate that never evolves?\n  </criterion>\n  <criterion id=\"actuation_safety\" weight=\"0.15\">\n    Are irreversible/physical actions gated behind HITL and a hard safety\n    envelope? Reward-hacking a KPI by disabling sensors must be penalised heavily.\n  </criterion>\n</domain_criteria>\n\n",
+        "role": "system"
+      },
+      {
+        "content": "Evaluate this proposed agent architecture for the 'smart_manufacturing' domain:\n\nA defect detector that never recalibrates on supplier changes and, when confidence collapses after a lot change, still never escalates the ambiguous calls to a human.\n[[flaws:concept_drift_blind,no_hitl_escalation]] [[strengths:]]",
+        "role": "user"
+      }
+    ],
+    "model": "Llama-3.1-8B-Instruct",
+    "response_format": {
+      "json_schema": {
+        "name": "rqgm_judge_verdict",
+        "schema": {
+          "properties": {
+            "criterion_penalties": {
+              "additionalProperties": {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              "description": "Per-criterion deficit contribution keyed by rubric criterion id.",
+              "type": "object"
+            },
+            "deficit_loose": {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "reasoning": {
+              "type": "string"
+            },
+            "red_flags": {
+              "items": {
+                "properties": {
+                  "criterion": {
+                    "type": "string"
+                  },
+                  "detail": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "enum": [
+                      "critical",
+                      "high",
+                      "low",
+                      "medium"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "criterion",
+                  "severity"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "deficit_loose",
+            "criterion_penalties",
+            "red_flags"
+          ],
+          "type": "object"
+        },
+        "strict": false
+      },
+      "type": "json_schema"
+    },
+    "stream": false,
+    "temperature": 0.1
+  }
+}
