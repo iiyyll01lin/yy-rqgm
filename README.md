@@ -235,7 +235,7 @@ yy-rqgm/
 ├── infra/                     # docker-compose.yml + docker-compose.rocm.yml
 ├── scripts/                   # dev.sh（起服務）、demo.sh（走查）、quantize_quark.py
 ├── data/                      # anchor/（73 labeled, 2 domains: train/dev/val/test）、frontier/、epoch_state.json、rqgm_state.json
-└── tests/                     # 104 tests（102 passed + 2 @live skipped；gatekeeper 物理數學 + RQGM gate/frontier/erasure 必測）
+└── tests/                     # 147 tests（145 passed + 2 @live skipped；gatekeeper 物理數學 + RQGM gate/frontier/erasure 必測）
 ```
 
 ---
@@ -243,7 +243,7 @@ yy-rqgm/
 ## 測試與建置 (Testing & Build)
 
 ```bash
-uv run pytest                  # backend：102 passed, 2 skipped（deterministic，離線；2 skips = @live，需 GPU）
+uv run pytest                  # backend：145 passed, 2 skipped（deterministic，離線；2 skips = @live，需 GPU）
 cd frontend && npm run build   # frontend：type-check + production build
 ```
 
