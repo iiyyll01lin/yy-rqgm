@@ -30,6 +30,10 @@ _FRONTIER_DIR = _REPO_ROOT / "data" / "frontier"
 # gitignored — see record_metrics_snapshot / regression_violations below.
 _METRICS_DIR = _REPO_ROOT / "data" / "metrics"
 METRICS_LEDGER_PATH = _METRICS_DIR / "ledger.jsonl"
+# Judge-vs-gold agreement result (produced by scripts/gold_agreement.py; runtime
+# artifact, gitignored). Read ADDITIVELY below so the report surfaces it when a
+# gold pass has been run and stays empty otherwise (the default offline state).
+GOLD_AGREEMENT_PATH = _METRICS_DIR / "gold_agreement.json"
 
 
 def _git_sha() -> str | None:
@@ -149,6 +153,32 @@ def _over_acceptance(
     }
 
 
+def _judge_vs_gold() -> dict[str, Any]:
+    """Judge-vs-gold agreement, read additively from the gold_agreement tool's
+    persisted result if present, else ``{}`` (default offline state).
+
+    A SECOND, harder reference for judge quality: a STRONGER "gold" model scores
+    the same held-out candidates as the small judge, and we report their accuracy +
+    Cohen's κ alongside the existing judge-vs-planted κ. HONEST CAVEAT (carried in
+    the ``caveat`` field): the gold model is a stronger-MODEL proxy for a human
+    labeler, NOT a real human — a true κ-vs-human still needs a human pass.
+    """
+    try:
+        data = json.loads(GOLD_AGREEMENT_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    # Only surface a result matching the CURRENT champion, so a stale cross-epoch
+    # gold pass (recorded under a prior rubric) is not misattributed after a promotion.
+    cv = data.get("champion_version")
+    if cv and cv != versioning.get_champion_version():
+        return {}
+    keep = (
+        "n", "tau", "champion_version", "judge_model", "gold_model",
+        "judge_vs_gold", "judge_vs_planted", "gold_vs_planted", "caveat", "generated_at",
+    )
+    return {k: data[k] for k in keep if k in data}
+
+
 def _latest_frontier() -> dict[str, Any]:
     if not _FRONTIER_DIR.exists():
         return {}
@@ -216,6 +246,7 @@ def build_report(client: LemonadeClient | None = None, *, include_agreement: boo
         "over_acceptance": over_acceptance,
         "hack_ratio": exploit.to_dict(),
         "judge_agreement": judge_agreement,
+        "judge_vs_gold": _judge_vs_gold(),
         "frontier": _latest_frontier(),
         "memory": memory,
     }
@@ -262,6 +293,8 @@ _LEDGER_KEYS = (
     "val_separation", "test_separation", "over_optimization_gap",
     "over_acceptance_rate", "hack_ratio",
     "val_accuracy", "val_kappa", "test_accuracy", "test_kappa",
+    # judge-vs-gold (stronger-model proxy) — null unless a gold pass has been run.
+    "judge_vs_gold_kappa", "judge_vs_gold_accuracy", "gold_model",
     "judge_model", "using_mock", "git_sha",
 )
 
@@ -271,6 +304,8 @@ def _snapshot_from_report(rep: dict[str, Any]) -> dict[str, Any]:
     val_ja, test_ja = ja.get("val", {}) or {}, ja.get("test", {}) or {}
     prov = rep.get("provenance", {}) or {}
     sep = rep.get("separation", {}) or {}
+    jvg_block = rep.get("judge_vs_gold", {}) or {}
+    jvg = jvg_block.get("judge_vs_gold", {}) or {}
     return {
         "recorded_at": int(time.time()),
         "epoch_id": rep.get("epoch_id"),
@@ -284,6 +319,9 @@ def _snapshot_from_report(rep: dict[str, Any]) -> dict[str, Any]:
         "val_kappa": val_ja.get("cohen_kappa"),
         "test_accuracy": test_ja.get("accuracy"),
         "test_kappa": test_ja.get("cohen_kappa"),
+        "judge_vs_gold_kappa": jvg.get("cohen_kappa"),
+        "judge_vs_gold_accuracy": jvg.get("accuracy"),
+        "gold_model": jvg_block.get("gold_model"),
         "judge_model": prov.get("judge_model"),
         "using_mock": prov.get("using_mock"),
         "git_sha": prov.get("git_sha"),

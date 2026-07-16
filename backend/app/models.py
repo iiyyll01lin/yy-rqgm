@@ -254,6 +254,9 @@ class EpochReportResponse(BaseModel):
     over_acceptance: dict = Field(default_factory=dict)
     hack_ratio: dict = Field(default_factory=dict)
     judge_agreement: dict = Field(default_factory=dict)
+    # judge_vs_gold = agreement (accuracy + κ) with a STRONGER "gold" model as a
+    # human-proxy labeler; empty unless a gold pass has run. NOT a real-human κ.
+    judge_vs_gold: dict = Field(default_factory=dict)
     frontier: dict = Field(default_factory=dict)
     memory: dict = Field(default_factory=dict)
 
