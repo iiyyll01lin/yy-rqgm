@@ -253,8 +253,11 @@ cd frontend && npm run build   # frontend：type-check + production build
 
 ```bash
 # 1) 起本地模型（擇一）
-docker compose -f infra/docker-compose.rocm.yml up --build   # vLLM-ROCm on :8000
+#   本機實測（Strix Halo gfx1151）：llama.cpp ROCm，用系統 /opt/rocm 函式庫、勿加 --jinja
+LD_LIBRARY_PATH=/opt/rocm/lib:<rocm-llama-dir> HIP_VISIBLE_DEVICES=0 \
+  llama-server -m <model.gguf> -ngl 99 --host 127.0.0.1 --port 8000
 export LEMONADE_BASE_URL=http://localhost:8000/v1
+#   或 vLLM-ROCm: docker compose -f infra/docker-compose.rocm.yml up --build   # on :8000
 #   或 Lemonade（Ryzen AI / Radeon）: export LEMONADE_BASE_URL=http://localhost:8020/api/v1
 
 # 2) 一鍵 runbook：離線驗接線 → 錄 cassette → 斷網 replay 重現 → 印 live 報告
@@ -263,7 +266,7 @@ scripts/live_validate.sh
 
 三步：① **離線**驗 live 接線（fake transport + cassette，**無 GPU 也會跑**，就是本 repo CI 能證明的部分）；② 有 server 才 `RQGM_RUN_LIVE=1 LEMONADE_CASSETTE_MODE=record uv run pytest -m live` 錄 cassette，再 `MODE=replay` 斷網重播確認 byte-for-byte 可重現；③ 印 `provenance` / val-test separation / judge κ / hack-ratio 供人工檢視。可選 live 開關：`AGENTFORGE_EMBEDDER=sentence-transformers|lemonade`（真 embedder）、`AGENTFORGE_SURROGATE=torch`（ROCm surrogate）、`AGENTFORGE_CROSS_MODEL=<model>`（跨家族 judge）。
 
-> **仍需真 AMD GPU（無法離線證明，誠實聲明）**：structured JSON / guided decoding 是否**真被服務端遵守**、strict/loose 的**真實分離品質**、judge κ vs **真人**標註、latency/throughput。本開發環境無 AMD GPU，故僅完成步驟 ①；步驟 ②③ 為待硬體執行的 runbook。
+> **本機為 Tier-1 真跑硬體，步驟 ①②③ 已實跑（非只跑 mock）**：本機 = AMD Ryzen AI Max+ PRO 395（Radeon 8060S / gfx1151 RDNA3.5 + XDNA2 NPU）。以 llama.cpp ROCm 在 **gfx1151** 上服務 Llama-3.2-3B-Instruct（OpenAI `/v1`）實跑 record→replay→report：服務端**確實遵守** `response_format` json_schema（grammar-constrained `criterion_penalties`）、strict/loose 與 latency（prompt≈2200 tok/s、gen≈75 tok/s）皆為真實數據、cassette replay byte-for-byte 可重現。實測坑：(a) 要用**系統 `/opt/rocm`** 函式庫（bundled ROCm 6.4 userspace 在此 kernel 會 segfault）；(b) **勿加 `--jinja`**（會讓現行 llama.cpp build 忽略 `response_format`）。**唯一仍待真人**：judge κ 目前仍是對 PLANTED anchor 標籤，非獨立真人標註 — 真正的 κ-vs-human 仍需一次真人標註。
 
 ---
 

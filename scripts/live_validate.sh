@@ -12,9 +12,20 @@
 #   3. prints the live transparency report (provenance + val/test separation +
 #      judge/human κ + hack-ratio) so a human can eyeball real separation quality.
 #
-# ---------------------------------------------------------------------------
-# REQUIRES A REAL AMD GPU BOX for steps 2-3 (be honest — this environment has
-# none, so only step 1 runs here). Bring up ONE of:
+# Steps 2-3 need a live OpenAI-compatible server backed by a REAL model. On AMD
+# this is Tier-1 "真跑" hardware — e.g. THIS box is an AMD Ryzen AI Max+ PRO 395
+# (Radeon 8060S / gfx1151 RDNA3.5 + XDNA2 NPU): a real GPU, NOT a GPU-less env.
+# VERIFIED on this Strix Halo: llama.cpp ROCm on gfx1151 serves an OpenAI /v1
+# endpoint and HONORS response_format json_schema (grammar-constrained). Two
+# gotchas found here: (a) run llama-server against the *system* ROCm (/opt/rocm)
+# libs — the bundled ROCm 6.4 userspace segfaults on this kernel; (b) do NOT pass
+# --jinja — it silently disables response_format on the current llama.cpp build.
+# Bring up ONE of:
+#
+#   # llama.cpp ROCm on gfx1151 (VERIFIED working on this Strix Halo):
+#   LD_LIBRARY_PATH=/opt/rocm/lib:<rocm-llama-dir> HIP_VISIBLE_DEVICES=0 \
+#     llama-server -m <model.gguf> -ngl 99 --host 127.0.0.1 --port 8000
+#   export LEMONADE_BASE_URL=http://localhost:8000/v1
 #
 #   # vLLM on ROCm (OpenAI server):
 #   docker compose -f infra/docker-compose.rocm.yml up --build
@@ -62,7 +73,7 @@ if [[ -n "$BASE" ]]; then
 fi
 
 if [[ "$probe_ok" -ne 1 ]]; then
-  step "No live server reachable — stopping after the offline checks (EXPECTED without a GPU)"
+  step "No live server reachable — stopping after the offline checks (start a local model server to run steps 2-3)"
   cat <<EOF
 LEMONADE_BASE_URL is ${BASE:-<unset>} and no OpenAI-compatible /models endpoint
 answered. Steps 2-3 REQUIRE a real served model on an AMD GPU. Once one is up
