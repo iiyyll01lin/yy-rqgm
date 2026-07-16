@@ -16,7 +16,7 @@ os.environ.setdefault("LEMONADE_FORCE_MOCK", "1")
 
 import pytest  # noqa: E402
 
-from backend.evaluator import gate, rqgm_adapter, versioning  # noqa: E402
+from backend.evaluator import gate, report, rqgm_adapter, versioning  # noqa: E402
 
 _RUN_LIVE = os.getenv("RQGM_RUN_LIVE", "").lower() in ("1", "true", "yes")
 
@@ -42,7 +42,9 @@ def _clean_epoch_state():
     versioning.reset()
     rqgm_adapter.get_controller().reset()
     gate.reset_sequential_state()
+    report.reset_metrics_ledger()
     yield
     versioning.reset()
     rqgm_adapter.get_controller().reset()
     gate.reset_sequential_state()
+    report.reset_metrics_ledger()

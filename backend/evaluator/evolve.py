@@ -648,6 +648,16 @@ def approve_challenger(
         client=client,
     )
 
+    # P1-ledger: append the new champion's held-out metrics to the cross-epoch
+    # time-series (best-effort; must never break a promotion). This is the data
+    # the regression guard (report.regression_violations) audits.
+    try:
+        from backend.evaluator import report as _report
+
+        _report.record_metrics_snapshot(client=client)
+    except Exception:
+        pass
+
     return {
         "epoch_id": result["epoch_id"],
         "applied": True,

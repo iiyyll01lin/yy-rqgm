@@ -337,6 +337,8 @@ flowchart LR
 
 報告與 `/health` 亦帶 **`provenance`**（`judge_model` + `git_sha` + `rqgm_backend` + `using_mock`），把每份數字綁到產生它的模型與原始碼版本，方便重現 / 稽核。
 
+**跨 epoch metrics ledger + regression guard（[`report.record_metrics_snapshot`](../backend/evaluator/report.py)）**：每次**實際晉升**都把 champion 的 held-out 指標（val/test separation、judge accuracy/κ、hack-ratio、over-acceptance、over-optimization gap、provenance）追加成一條時序到 `data/metrics/ledger.jsonl`（append-only JSONL，gitignored）。`regression_violations(prev, curr)` 提供**回歸守門**：晉升**不得**降低未動過的 gold `test` split 的 separation 或 Cohen's κ——否則代表用 proxy(`val`) 增益換掉了真實 held-out 品質（reward-hacking / over-optimization 的訊號）。測試 `tests/test_metrics_ledger.py` 鎖住這條不變式。
+
 ### 6.4 Selective Erasure（選擇性抹除，非全量清空）
 
 升級後，舊 evaluator 產生的部分「效用判斷」可能已失效——但**不是全部**。selective erasure（**已實作**，[`backend/evaluator/evolve.py`](../backend/evaluator/evolve.py) `selective_erasure`）只處理「其效用值依賴被替換 evaluator」的記錄，靠 `created_at_epoch` 標籤精準定位（§8），且做的是 **soft-delete + reconfirm**、不是硬刪：
