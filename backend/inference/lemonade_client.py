@@ -1,17 +1,51 @@
-"""OpenAI-compatible client for a local Lemonade server, with a MOCK fallback.
+"""OpenAI-compatible client for a local model server, with a MOCK fallback.
 
-Lemonade (https://github.com/lemonade-sdk/lemonade) exposes an OpenAI-compatible
-API (``/api/v1/chat/completions`` etc.) for running LLMs locally on AMD Ryzen AI
-(NPU) and Radeon (ROCm) hardware.
+Talks to any OpenAI-compatible ``/chat/completions`` endpoint. Two first-class
+live backends are supported (both expose the same wire format):
+
+* **Lemonade** (https://github.com/lemonade-sdk/lemonade) — LLMs on AMD Ryzen AI
+  (NPU) and Radeon (ROCm). Base URL looks like ``http://localhost:8020/api/v1``.
+* **vLLM-ROCm** (OpenAI server) — ``python -m vllm.entrypoints.openai.api_server``
+  on an AMD ROCm GPU. Base URL looks like ``http://localhost:8000/v1``.
 
 CRITICAL design property: if the endpoint is unreachable (no server, no GPU, no
 network), :meth:`LemonadeClient.chat` transparently returns a *deterministic
 mock* completion. This lets the whole AgentForge platform — LangGraph
-orchestration, RQGM evaluation, evolution — run end-to-end on a normal machine.
+orchestration, RQGM evaluation, evolution — run end-to-end on a normal machine
+AND keeps the default test suite fully offline/deterministic.
+
+Environment (all optional; the defaults keep everything offline)
+---------------------------------------------------------------
+* ``LEMONADE_BASE_URL`` — OpenAI-compatible base, e.g. ``http://localhost:8000/v1``
+  for vLLM-ROCm or ``http://localhost:8020/api/v1`` for Lemonade (default).
+* ``LEMONADE_MODEL``    — model id sent in the request (default ``AgentForge-Local``).
+* ``LEMONADE_API_KEY``  — optional bearer token (vLLM ``--api-key``).
+* ``LEMONADE_FORCE_MOCK`` — ``1/true/yes`` forces the deterministic mock and never
+  touches the network (the test suite sets this; see ``tests/conftest.py``).
+* ``LEMONADE_CASSETTE_DIR`` / ``LEMONADE_CASSETTE_MODE`` — record/replay a real
+  live transcript for reproducible offline nightly runs (see
+  :mod:`backend.inference.cassette`).
+
+To run against a REAL local model::
+
+    # vLLM-ROCm (OpenAI server on an AMD GPU):
+    LEMONADE_BASE_URL=http://localhost:8000/v1 LEMONADE_MODEL=<served-model> \
+        uv run <entrypoint>
+
+    # Lemonade:
+    LEMONADE_BASE_URL=http://localhost:8020/api/v1 uv run <entrypoint>
+
+    # Record a reproducible transcript once, then replay it offline in CI:
+    LEMONADE_BASE_URL=http://localhost:8000/v1 \
+        LEMONADE_CASSETTE_DIR=tests/cassettes LEMONADE_CASSETTE_MODE=record \
+        RQGM_RUN_LIVE=1 uv run pytest -m live
+    LEMONADE_CASSETTE_DIR=tests/cassettes LEMONADE_CASSETTE_MODE=replay uv run pytest
 
 Nodes that need structured output embed a :class:`MockMarker` sentinel in their
 prompt; the mock recognises it and returns schema-valid JSON so downstream
-parsing always succeeds offline.
+parsing always succeeds offline. On the live path callers may additionally pass a
+``response_format`` (JSON-schema / guided decoding) and a deterministic ``seed``
+for reproducibility — see :meth:`LemonadeClient.chat`.
 """
 
 from __future__ import annotations
@@ -24,11 +58,14 @@ from typing import Any
 
 import httpx
 
+from backend.inference.cassette import Cassette
+
 DEFAULT_BASE_URL = "http://localhost:8020/api/v1"
 DEFAULT_MODEL = "AgentForge-Local"
 
 # Lemonade's default port moved to 13305 in recent releases; the task pins the
-# default to 8020. Override either via LEMONADE_BASE_URL.
+# default to 8020. Point LEMONADE_BASE_URL at a vLLM server's ``/v1`` (typically
+# http://localhost:8000/v1) to use vLLM-ROCm instead.
 _CONNECT_TIMEOUT_S = 1.5
 _REQUEST_TIMEOUT_S = 60.0
 
@@ -66,12 +103,21 @@ def _normalize_messages(messages: Any) -> list[Message]:
 
 @dataclass
 class LemonadeClient:
-    """Thin OpenAI-compatible chat client with a deterministic mock fallback."""
+    """Thin OpenAI-compatible chat client with a deterministic mock fallback.
+
+    Resolution order for every request:
+
+    1. ``force_mock`` (or ``LEMONADE_FORCE_MOCK``) → deterministic mock, no net.
+    2. a configured **replay** cassette hit → the recorded live completion.
+    3. a reachable live server → the real model (optionally recorded).
+    4. otherwise → deterministic mock (so the platform never stalls).
+    """
 
     base_url: str | None = None
     model: str | None = None
     api_key: str | None = None
     force_mock: bool | None = None
+    cassette: Cassette | None = None
 
     def __post_init__(self) -> None:
         self.base_url = (self.base_url or os.getenv("LEMONADE_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
@@ -79,13 +125,22 @@ class LemonadeClient:
         self.api_key = self.api_key or os.getenv("LEMONADE_API_KEY")
         if self.force_mock is None:
             self.force_mock = os.getenv("LEMONADE_FORCE_MOCK", "").lower() in ("1", "true", "yes")
+        if self.cassette is None:
+            self.cassette = Cassette.from_env()
         self._live: bool | None = None
 
     # -- liveness ----------------------------------------------------------
     def is_live(self) -> bool:
-        """One-shot probe (cached). Never raises."""
+        """One-shot probe (cached). Never raises.
+
+        A cassette in pure **replay** mode is treated as "live" (it serves real
+        recorded completions with no network), so ``using_mock`` correctly reports
+        that the deterministic mock is NOT what produced the output.
+        """
         if self.force_mock:
             return False
+        if self.cassette is not None and self.cassette.mode == "replay":
+            return True
         if self._live is not None:
             return self._live
         try:
@@ -113,13 +168,24 @@ class LemonadeClient:
         model: str | None = None,
         temperature: float = 0.2,
         max_tokens: int = 768,
+        *,
+        seed: int | None = None,
+        response_format: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> str:
-        """Return the assistant text for ``messages``. Falls back to mock."""
+        """Return the assistant text for ``messages``. Falls back to mock.
+
+        ``seed`` (OpenAI/vLLM ``seed``) makes a live sample reproducible without
+        collapsing sampling to greedy — the caller keeps its ``temperature`` (so
+        e.g. the judge panel stays diverse) while each *individual* request is
+        deterministic for a fixed seed. ``response_format`` carries a JSON-schema
+        / guided-decoding contract for structured live output. Both are ignored
+        by the offline mock (which is already deterministic + schema-valid).
+        """
         msgs = _normalize_messages(messages)
         use_model = model or self.model
 
-        if not self.is_live():
+        if self.force_mock:
             return _mock_chat(msgs, use_model)
 
         payload: dict[str, Any] = {
@@ -129,7 +195,24 @@ class LemonadeClient:
             "max_tokens": max_tokens,
             "stream": False,
         }
+        if seed is not None:
+            payload["seed"] = seed
+        if response_format is not None:
+            payload["response_format"] = response_format
         payload.update(kwargs)
+
+        # Cassette replay: serve a recorded live completion with no network. A
+        # miss in pure-replay falls back to the mock so CI never stalls or hangs.
+        if self.cassette is not None and self.cassette.can_replay:
+            cached = self.cassette.get(payload)
+            if cached is not None:
+                return cached
+            if self.cassette.mode == "replay":
+                return _mock_chat(msgs, use_model)
+
+        if not self.is_live():
+            return _mock_chat(msgs, use_model)
+
         try:
             resp = httpx.post(
                 f"{self.base_url}/chat/completions",
@@ -139,7 +222,10 @@ class LemonadeClient:
             )
             resp.raise_for_status()
             data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
+            if self.cassette is not None and self.cassette.can_record:
+                self.cassette.put(payload, content)
+            return content
         except Exception:
             # Any live failure -> deterministic mock so the platform never stalls.
             self._live = False
