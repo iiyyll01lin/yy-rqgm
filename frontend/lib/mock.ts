@@ -19,12 +19,19 @@ import type {
   DiagnoseResponse,
   DomainRequest,
   DomainResponse,
+  EpochApproveResponse,
+  EpochProposeResponse,
+  EpochReport,
+  ExploitationReport,
   ExportRequest,
   ExportResponse,
   FeedbackRequest,
   FeedbackResponse,
-  Gap,
+  Frontier,
+  GateResult,
+  HealthResponse,
   ModelSpec,
+  Gap,
   SessionResponse,
   SimulateRequest,
   SimulateResponse,
@@ -735,5 +742,508 @@ Physics is a hard boundary; domain fit is judged by the evolving evaluator.
     "docker-compose.yml": dockerCompose,
     "app.py": appPy,
     "README.md": readme,
+  };
+}
+
+/* --------------------------------------------------------------------- */
+/* RQGM epoch-evolution mocks (admin surface)                            */
+/*                                                                        */
+/* A small, DETERMINISTIC state machine so the epoch-admin UI renders     */
+/* end-to-end with no backend. Narrative: champion-0 has a poison-pill    */
+/* blind spot (exploitation detected). The first proposed challenger adds  */
+/* the missing criteria and PASSES the code gate — approving it promotes   */
+/* the epoch; vetoing freezes it. After promotion the champion is strong,  */
+/* so the next challenger FAILS the code gate (and HITL is never even       */
+/* consulted — a human cannot override a failed gate).                     */
+/* --------------------------------------------------------------------- */
+
+/** RQGM tolerance schedule (loosest → tightest); dropping a level = stricter. */
+const RQGM_TOLERANCES = [0.0, 0.001, 0.01, 0.025, 0.05, 0.1];
+
+const VAL_WEAK_IDS = [
+  "anchor_val_thermal_ignored",
+  "anchor_val_noise_gamed",
+  "anchor_val_no_fallback",
+  "anchor_val_overfit_prompt",
+];
+const VAL_STRONG_IDS = [
+  "anchor_val_robust_qc",
+  "anchor_val_layered_safety",
+  "anchor_val_calibrated",
+];
+
+interface MockEpochState {
+  epoch: number;
+  championVersion: string;
+  championValSep: number;
+  championTestSep: number;
+}
+
+const mockEpoch: MockEpochState = {
+  epoch: 0,
+  championVersion: "champion-0",
+  championValSep: 0.505,
+  championTestSep: 0.6,
+};
+
+interface PendingChallenger {
+  version: string;
+  parentVersion: string;
+  valSep: number;
+  bbe: number;
+  addedCriteria: string[];
+  objectives: Record<string, number>;
+  rubricDiff: string;
+  frontier: Frontier;
+  passes: boolean;
+}
+
+let mockPending: PendingChallenger | null = null;
+
+function round(n: number, dp = 4): number {
+  const p = 10 ** dp;
+  return Math.round(n * p) / p;
+}
+
+function shortId(): string {
+  return Math.random().toString(36).slice(2, 8);
+}
+
+function deficitMap(weak: number[], strong: number[]): Record<string, number> {
+  const m: Record<string, number> = {};
+  VAL_WEAK_IDS.forEach((id, i) => (m[id] = round(weak[i] ?? weak[weak.length - 1])));
+  VAL_STRONG_IDS.forEach(
+    (id, i) => (m[id] = round(strong[i] ?? strong[strong.length - 1])),
+  );
+  return m;
+}
+
+/** Champion-0 has a poison-pill blind spot (loose passes what strict fails). */
+function championExploitation(epoch: number): ExploitationReport {
+  if (epoch === 0) {
+    return {
+      backend: "rqgm",
+      mean_hack_ratio: 0.3118,
+      exploitation_detected: true,
+      reason: "EXPLOITATION_DETECTED",
+      tolerances_before: RQGM_TOLERANCES,
+      tolerances_after: RQGM_TOLERANCES.slice(0, 5),
+      tightened: true,
+      trigger_adversarial_injection: false,
+      strictness_level: 1,
+      n_samples: 4,
+    };
+  }
+  // Promoted champion has closed the blind spot: no further tightening.
+  return {
+    backend: "rqgm",
+    mean_hack_ratio: 0.8021,
+    exploitation_detected: false,
+    reason: "NO_TRANSITION",
+    tolerances_before: RQGM_TOLERANCES.slice(0, 5),
+    tolerances_after: RQGM_TOLERANCES.slice(0, 5),
+    tightened: false,
+    trigger_adversarial_injection: false,
+    strictness_level: 1,
+    n_samples: 4,
+  };
+}
+
+function challengerExploitation(): ExploitationReport {
+  return {
+    backend: "rqgm",
+    mean_hack_ratio: 0.8021,
+    exploitation_detected: false,
+    reason: "NO_TRANSITION",
+    tolerances_before: RQGM_TOLERANCES.slice(0, 5),
+    tolerances_after: RQGM_TOLERANCES.slice(0, 5),
+    tightened: false,
+    trigger_adversarial_injection: false,
+    strictness_level: 1,
+    n_samples: 4,
+  };
+}
+
+function buildChallenger(): PendingChallenger {
+  const epoch = mockEpoch.epoch;
+  const passes = epoch === 0; // first challenger fixes the blind spot; later ones plateau
+  const version = `challenger-e${epoch}-${shortId()}`;
+  const parentVersion = mockEpoch.championVersion;
+
+  const valSep = passes
+    ? round(mockEpoch.championValSep + 0.3)
+    : round(mockEpoch.championValSep - 0.025);
+  const bbe = passes ? 0.275 : -0.021;
+  const addedCriteria = passes
+    ? ["thermal_budget", "noise_resilience"]
+    : ["verbosity_penalty"];
+  const objectives = passes
+    ? {
+        "sep::thermal_budget": 0.46,
+        "sep::noise_resilience": 0.38,
+        adversarial: 0.62,
+        parsimony: -2,
+      }
+    : {
+        "sep::thermal_budget": 0.44,
+        "sep::noise_resilience": 0.31,
+        adversarial: 0.5,
+        parsimony: -1,
+      };
+
+  const runnerUpVersion = `challenger-e${epoch}-${shortId()}`;
+  const frontier: Frontier = {
+    size: 3,
+    top_k: 8,
+    objectives: [
+      "adversarial",
+      "parsimony",
+      "sep::noise_resilience",
+      "sep::thermal_budget",
+    ],
+    best_version: version,
+    members: [
+      {
+        version,
+        objectives,
+        bbe,
+        added_criteria: addedCriteria,
+        parent_version: parentVersion,
+      },
+      {
+        version: runnerUpVersion,
+        objectives: {
+          "sep::thermal_budget": 0.51,
+          "sep::noise_resilience": 0.09,
+          adversarial: 0.55,
+          parsimony: -1,
+        },
+        bbe: round(bbe - 0.08),
+        added_criteria: ["thermal_budget"],
+        parent_version: parentVersion,
+      },
+      {
+        version: parentVersion,
+        objectives: {
+          "sep::thermal_budget": 0.12,
+          "sep::noise_resilience": 0.08,
+          adversarial: 0.33,
+          parsimony: 0,
+        },
+        bbe: 0.02,
+        added_criteria: [],
+        parent_version: "",
+      },
+    ],
+  };
+
+  const rubricDiff = passes
+    ? `--- ${parentVersion}.xml\n+++ ${version}.xml\n@@ <criteria> @@\n+  <criterion id="thermal_budget" weight="0.15">\n+    Penalise architectures that ignore the thermal envelope of the target AMD tier.\n+  </criterion>\n+  <criterion id="noise_resilience" weight="0.12">\n+    Require an explicit fallback path when sensor SNR degrades below spec.\n+  </criterion>`
+    : `--- ${parentVersion}.xml\n+++ ${version}.xml\n@@ <criteria> @@\n+  <criterion id="verbosity_penalty" weight="0.05">\n+    Penalise padded, low-signal justifications.\n+  </criterion>`;
+
+  return {
+    version,
+    parentVersion,
+    valSep,
+    bbe,
+    addedCriteria,
+    objectives,
+    rubricDiff,
+    frontier,
+    passes,
+  };
+}
+
+function buildGate(pending: PendingChallenger): GateResult {
+  const championSep = mockEpoch.championValSep;
+  const challengerSep = pending.valSep;
+  const delta = round(challengerSep - championSep);
+  const p1 = delta > 0;
+  const p2 = pending.bbe > 0;
+  const passed = p1 && p2;
+
+  const championDeficits = deficitMap(
+    [0.55, 0.52, 0.5, 0.53],
+    [0.03, 0.02, 0.01],
+  );
+  const challengerDeficits = pending.passes
+    ? deficitMap([0.85, 0.82, 0.8, 0.83], [0.03, 0.02, 0.01])
+    : deficitMap([0.53, 0.5, 0.48, 0.51], [0.03, 0.02, 0.01]);
+
+  const reason = passed
+    ? `code gate PASSED: challenger separation ${challengerSep.toFixed(4)} > champion ${championSep.toFixed(4)} (delta ${delta >= 0 ? "+" : ""}${delta.toFixed(4)}); bootstrap lower bound +${pending.bbe.toFixed(4)} > 0 @ alpha=0.1.`
+    : !p1
+      ? `code gate FAILED (P1 non-inferiority): challenger separation ${challengerSep.toFixed(4)} does not exceed champion ${championSep.toFixed(4)} (delta ${delta.toFixed(4)}); tie favours incumbent.`
+      : `code gate FAILED (P2 bootstrap): (challenger-champion) separation lower bound ${pending.bbe.toFixed(4)} is not > 0 @ alpha=0.1 (delta ${delta.toFixed(4)}).`;
+
+  return {
+    passed,
+    reason,
+    champion_separation: round(championSep),
+    challenger_separation: round(challengerSep),
+    separation_delta: delta,
+    p1_non_inferior: p1,
+    p2_passed: p2,
+    bootstrap_lower_bound: round(pending.bbe),
+    bootstrap_alpha: 0.1,
+    n_val: 7,
+    champion_deficits: championDeficits,
+    challenger_deficits: challengerDeficits,
+  };
+}
+
+export function mockReport(): EpochReport {
+  const epoch = mockEpoch.epoch;
+  const valSep = mockEpoch.championValSep;
+  const testSep = mockEpoch.championTestSep;
+  const exploited = epoch === 0;
+
+  const perAnchor = (
+    ids: string[],
+    label: "weak" | "strong",
+    deficits: number[],
+    predictedOverride?: ("weak" | "strong")[],
+  ) =>
+    ids.map((id, i) => ({
+      id,
+      deficit: round(deficits[i] ?? deficits[deficits.length - 1]),
+      predicted: predictedOverride?.[i] ?? (deficits[i] >= 0.3 ? "weak" : "strong"),
+      label,
+    }));
+
+  // On champion-0 one weak anchor is mis-judged as strong (the blind spot).
+  const valWeakPred: ("weak" | "strong")[] = exploited
+    ? ["weak", "weak", "strong", "weak"]
+    : ["weak", "weak", "weak", "weak"];
+
+  return {
+    epoch_id: epoch,
+    champion_version: mockEpoch.championVersion,
+    rqgm_backend: "rqgm",
+    data_splits: {
+      train: { weak: 5, strong: 5, total: 10 },
+      val: { weak: 4, strong: 3, total: 7 },
+      test: { weak: 3, strong: 2, total: 5 },
+    },
+    separation: {
+      val: {
+        separation: round(valSep),
+        mean_weak_deficit: round(exploited ? 0.525 : 0.845),
+        mean_strong_deficit: 0.02,
+        n: 7,
+      },
+      test: {
+        separation: round(testSep),
+        mean_weak_deficit: round(exploited ? 0.62 : 0.86),
+        mean_strong_deficit: 0.02,
+        n: 5,
+      },
+    },
+    hack_ratio: championExploitation(epoch),
+    judge_agreement: {
+      val: {
+        n: 7,
+        tau: 0.3,
+        accuracy: round(exploited ? 0.857 : 1.0),
+        cohen_kappa: round(exploited ? 0.72 : 1.0),
+        correct: exploited ? 6 : 7,
+        per_anchor: [
+          ...perAnchor(
+            VAL_WEAK_IDS,
+            "weak",
+            exploited ? [0.55, 0.52, 0.18, 0.53] : [0.85, 0.82, 0.8, 0.83],
+            valWeakPred,
+          ),
+          ...perAnchor(VAL_STRONG_IDS, "strong", [0.03, 0.02, 0.01]),
+        ],
+      },
+      test: {
+        n: 5,
+        tau: 0.3,
+        accuracy: 1.0,
+        cohen_kappa: 1.0,
+        correct: 5,
+        per_anchor: [
+          ...perAnchor(
+            ["anchor_test_gamed_a", "anchor_test_gamed_b", "anchor_test_gamed_c"],
+            "weak",
+            [0.64, 0.61, 0.6],
+          ),
+          ...perAnchor(
+            ["anchor_test_robust_a", "anchor_test_robust_b"],
+            "strong",
+            [0.03, 0.01],
+          ),
+        ],
+      },
+    },
+    frontier: mockPending
+      ? mockPending.frontier
+      : {
+          size: 3,
+          top_k: 8,
+          objectives: [
+            "adversarial",
+            "parsimony",
+            "sep::noise_resilience",
+            "sep::thermal_budget",
+          ],
+          best_version: `challenger-e${Math.max(0, epoch - 1)}-seed01`,
+          members: [
+            {
+              version: `challenger-e${Math.max(0, epoch - 1)}-seed01`,
+              objectives: {
+                "sep::thermal_budget": 0.46,
+                "sep::noise_resilience": 0.38,
+                adversarial: 0.62,
+                parsimony: -2,
+              },
+              bbe: 0.275,
+              added_criteria: ["thermal_budget", "noise_resilience"],
+              parent_version: "champion-0",
+            },
+            {
+              version: `challenger-e${Math.max(0, epoch - 1)}-seed02`,
+              objectives: {
+                "sep::thermal_budget": 0.51,
+                "sep::noise_resilience": 0.09,
+                adversarial: 0.55,
+                parsimony: -1,
+              },
+              bbe: 0.19,
+              added_criteria: ["thermal_budget"],
+              parent_version: "champion-0",
+            },
+            {
+              version: "champion-0",
+              objectives: {
+                "sep::thermal_budget": 0.12,
+                "sep::noise_resilience": 0.08,
+                adversarial: 0.33,
+                parsimony: 0,
+              },
+              bbe: 0.02,
+              added_criteria: [],
+              parent_version: "",
+            },
+          ],
+        },
+    memory: {
+      mode: "local",
+      collection: "agentforge_memory",
+      total: exploited ? 12 : 11,
+      heuristic_failure: exploited ? 7 : 6,
+      physics_truth: 5,
+    },
+  };
+}
+
+export function mockProposeEpoch(): EpochProposeResponse {
+  const pending = buildChallenger();
+  mockPending = pending;
+  return {
+    challenger_id: pending.version,
+    rubric_diff: pending.rubricDiff,
+    metrics: {
+      split: "val",
+      frontier_size: pending.frontier.size,
+      added_criteria: pending.addedCriteria,
+      champion_separation: round(mockEpoch.championValSep),
+      challenger_separation: round(pending.valSep),
+      separation_delta: round(pending.valSep - mockEpoch.championValSep),
+      bbe_lower_bound: round(pending.bbe),
+      objectives: pending.objectives,
+      note: "best of the Pareto frontier on VAL by BBε lower bound; the code gate re-checks.",
+    },
+    frontier: pending.frontier,
+  };
+}
+
+export function mockApproveEpoch(approve: boolean): EpochApproveResponse {
+  const pending = mockPending ?? buildChallenger();
+  mockPending = pending;
+  const gate = buildGate(pending);
+  const championExploit = championExploitation(mockEpoch.epoch);
+  const challengerExploit = challengerExploitation();
+
+  // Stage 1: the code gate can block regardless of the human decision.
+  if (!gate.passed) {
+    return {
+      epoch_id: mockEpoch.epoch,
+      applied: false,
+      champion_version: mockEpoch.championVersion,
+      gate,
+      hitl: { consulted: false, approved: null, vetoed: false },
+      champion_exploitation: championExploit,
+      challenger_exploitation: challengerExploit,
+      erased_memories: 0,
+      reconfirmed_memories: 0,
+      reason:
+        "CODE GATE FAILED; HITL not consulted (a human cannot override a failed gate).",
+    };
+  }
+
+  // Stage 2: HITL veto-only safety lock.
+  if (!approve) {
+    return {
+      epoch_id: mockEpoch.epoch,
+      applied: false,
+      champion_version: mockEpoch.championVersion,
+      gate,
+      hitl: { consulted: true, approved: false, vetoed: true },
+      champion_exploitation: championExploit,
+      challenger_exploitation: challengerExploit,
+      erased_memories: 0,
+      reconfirmed_memories: 0,
+      reason: "challenger PASSED the code gate but was vetoed by HITL; champion frozen.",
+    };
+  }
+
+  // Approved: promote the challenger and advance the epoch.
+  const priorEpoch = mockEpoch.epoch;
+  mockEpoch.epoch = priorEpoch + 1;
+  mockEpoch.championVersion = pending.version;
+  mockEpoch.championValSep = pending.valSep;
+  mockEpoch.championTestSep = round(mockEpoch.championTestSep + 0.23);
+  mockPending = null;
+
+  return {
+    epoch_id: mockEpoch.epoch,
+    applied: true,
+    champion_version: mockEpoch.championVersion,
+    gate,
+    hitl: { consulted: true, approved: true, vetoed: false },
+    champion_exploitation: championExploit,
+    challenger_exploitation: challengerExploit,
+    erased_memories: 1,
+    reconfirmed_memories: 1,
+    reason: `promoted challenger to epoch ${mockEpoch.epoch}; physics_truth memories preserved, obsolete heuristic_failure soft-deleted.`,
+  };
+}
+
+export function mockHealth(): HealthResponse {
+  const epoch = mockEpoch.epoch;
+  const exploited = epoch === 0;
+  return {
+    status: "ok",
+    epoch_id: epoch,
+    champion_version: mockEpoch.championVersion,
+    memory: {
+      mode: "local",
+      collection: "agentforge_memory",
+      total: exploited ? 12 : 11,
+      heuristic_failure: exploited ? 7 : 6,
+      physics_truth: 5,
+    },
+    evaluator: {
+      rqgm_backend: "rqgm",
+      val_separation: round(mockEpoch.championValSep),
+      test_separation: round(mockEpoch.championTestSep),
+      hack_ratio: exploited ? 0.3118 : 0.8021,
+      exploitation_detected: exploited,
+      tolerance_levels: 5,
+      val_judge_accuracy: round(exploited ? 0.857 : 1.0),
+      val_judge_kappa: round(exploited ? 0.72 : 1.0),
+    },
   };
 }

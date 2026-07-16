@@ -212,3 +212,204 @@ export interface FeedbackResponse {
   ok: boolean;
   stored_as: string;
 }
+
+/* --------------------------------------------------------------------- */
+/* Admin / RQGM epoch-evolution contract                                  */
+/*                                                                        */
+/* Shapes for the epoch-admin surface: the two-stage promotion gate       */
+/* (code gate first, HITL veto-only), the Pareto frontier population       */
+/* search, RQGM hack-ratio / exploitation state, and the transparency      */
+/* report (data splits, val/test separation, judge agreement, memory).     */
+/* --------------------------------------------------------------------- */
+
+/** Per-split anchor counts (train / val / test isolation). */
+export interface SplitCount {
+  weak: number;
+  strong: number;
+  total: number;
+}
+
+/** Anchor dataset split counts used by GEPA (train) / gate (val) / report (test). */
+export interface DataSplits {
+  train: SplitCount;
+  val: SplitCount;
+  test: SplitCount;
+}
+
+/** Weak-vs-strong deficit separation on one held-out split. */
+export interface SplitSeparation {
+  separation: number;
+  mean_weak_deficit: number;
+  mean_strong_deficit: number;
+  n: number;
+}
+
+/**
+ * RQGM hack-ratio / exploitation assessment (+ automatic tolerance tightening).
+ * `mean_hack_ratio` is `mean(quality_strict / quality_loose)`; low values mean
+ * the rubric passes (loose) what the ground-truth poison-pill check fails
+ * (strict), so exploitation fires and the tolerance schedule is tightened.
+ */
+export interface ExploitationReport {
+  backend: string;
+  mean_hack_ratio: number | null;
+  exploitation_detected: boolean;
+  reason: string;
+  tolerances_before: number[];
+  tolerances_after: number[];
+  tightened: boolean;
+  trigger_adversarial_injection: boolean;
+  strictness_level: number;
+  n_samples: number;
+}
+
+/** One anchor's judge-vs-human prediction (for the agreement confusion view). */
+export interface AgreementAnchor {
+  id: string;
+  deficit: number;
+  predicted: "weak" | "strong";
+  label: "weak" | "strong";
+}
+
+/** Judge/human agreement on one split (accuracy + Cohen's κ). */
+export interface JudgeAgreement {
+  n: number;
+  tau: number;
+  accuracy: number;
+  cohen_kappa: number;
+  correct: number;
+  per_anchor: AgreementAnchor[];
+}
+
+/** A single Pareto-frontier member (a candidate challenger rubric). */
+export interface FrontierMember {
+  version: string;
+  objectives: Record<string, number>;
+  bbe: number;
+  added_criteria: string[];
+  parent_version: string;
+}
+
+/** Pareto frontier summary — top-K non-dominated challenger rubrics. */
+export interface Frontier {
+  size: number;
+  top_k: number;
+  objectives: string[];
+  best_version: string | null;
+  members: FrontierMember[];
+}
+
+/** Qdrant (or local fallback) memory statistics. */
+export interface MemoryStats {
+  mode: string;
+  collection?: string;
+  total: number;
+  heuristic_failure: number;
+  physics_truth: number;
+  error?: string;
+}
+
+/** Response for GET /api/admin/report — the RQGM transparency report. */
+export interface EpochReport {
+  epoch_id: number;
+  champion_version: string;
+  rqgm_backend: string;
+  data_splits: DataSplits;
+  separation: { val: SplitSeparation; test: SplitSeparation };
+  hack_ratio: ExploitationReport;
+  judge_agreement: { val: JudgeAgreement; test: JudgeAgreement };
+  frontier: Frontier;
+  memory: MemoryStats;
+}
+
+/**
+ * The code gate result (Stage 1) — the anti-reward-hacking core: P1
+ * non-inferiority (`challenger_sep >= champion_sep`, ties favour the incumbent)
+ * and P2 paired-bootstrap CI (`bootstrap_lower_bound > 0`) on held-out VAL.
+ */
+export interface GateResult {
+  passed: boolean;
+  reason: string;
+  champion_separation: number;
+  challenger_separation: number;
+  separation_delta: number;
+  p1_non_inferior: boolean;
+  p2_passed: boolean;
+  bootstrap_lower_bound: number;
+  bootstrap_alpha: number;
+  n_val: number;
+  champion_deficits: Record<string, number>;
+  challenger_deficits: Record<string, number>;
+}
+
+/**
+ * HITL result (Stage 2) — a veto-only safety lock. The human is `consulted`
+ * ONLY when the code gate passes; they can `veto` a passing challenger but can
+ * NEVER override a failed code gate (`consulted:false` when the gate fails).
+ */
+export interface HitlResult {
+  consulted: boolean;
+  approved: boolean | null;
+  vetoed: boolean;
+}
+
+/** Metrics for the frontier's best member (on VAL) returned by /epoch/propose. */
+export interface ProposeMetrics {
+  split: string;
+  frontier_size?: number;
+  added_criteria?: string[];
+  champion_separation: number;
+  challenger_separation: number;
+  separation_delta: number;
+  bbe_lower_bound?: number;
+  objectives?: Record<string, number>;
+  note?: string;
+}
+
+/** Response for POST /api/admin/epoch/propose. */
+export interface EpochProposeResponse {
+  challenger_id: string;
+  rubric_diff: string;
+  metrics: ProposeMetrics;
+  frontier: Frontier;
+}
+
+/** Request body for POST /api/admin/epoch/approve. */
+export interface EpochApproveRequest {
+  approve: boolean;
+}
+
+/** Response for POST /api/admin/epoch/approve (the two-stage gate outcome). */
+export interface EpochApproveResponse {
+  epoch_id: number;
+  applied: boolean;
+  champion_version: string;
+  gate: GateResult;
+  hitl: HitlResult;
+  champion_exploitation: ExploitationReport;
+  challenger_exploitation: ExploitationReport;
+  erased_memories: number;
+  reconfirmed_memories: number;
+  reason: string;
+}
+
+/** Compact evaluator summary added to GET /health. */
+export interface EvaluatorHealth {
+  rqgm_backend: string;
+  val_separation: number;
+  test_separation: number;
+  hack_ratio: number | null;
+  exploitation_detected: boolean;
+  tolerance_levels: number;
+  val_judge_accuracy: number;
+  val_judge_kappa: number;
+}
+
+/** Subset of GET /health consumed by the epoch-admin surface. */
+export interface HealthResponse {
+  status: string;
+  epoch_id: number;
+  champion_version: string;
+  memory?: MemoryStats;
+  evaluator?: EvaluatorHealth | { error: string };
+}

@@ -1,6 +1,7 @@
 "use client";
 
-import { Cpu, ShieldCheck, Sparkles } from "lucide-react";
+import Link from "next/link";
+import { Cpu, GitBranch, ShieldCheck, Sparkles } from "lucide-react";
 import { SourceBanner } from "@/components/SourceBanner";
 import { Spinner } from "@/components/ui";
 import { Stepper } from "./Stepper";
@@ -32,7 +33,17 @@ function Header() {
             </div>
           </div>
         </div>
-        <SourceBanner />
+        <div className="flex items-center gap-3">
+          <SourceBanner />
+          <Link
+            href="/admin"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-line bg-surface-2 px-3 py-1.5 text-xs font-medium text-zinc-200 transition-colors hover:border-zinc-600"
+            title="RQGM 進化控制台：code-gate、frontier、對抗樣本"
+          >
+            <GitBranch className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">進化控制台</span>
+          </Link>
+        </div>
       </div>
     </header>
   );

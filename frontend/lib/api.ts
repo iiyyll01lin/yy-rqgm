@@ -15,6 +15,7 @@
  */
 
 import {
+  mockApproveEpoch,
   mockCreateSession,
   mockDiagnose,
   mockDomain,
@@ -22,6 +23,9 @@ import {
   mockFeedback,
   mockGetModels,
   mockGetTiers,
+  mockHealth,
+  mockProposeEpoch,
+  mockReport,
   mockSimulate,
 } from "./mock";
 import type {
@@ -29,11 +33,15 @@ import type {
   DiagnoseResponse,
   DomainRequest,
   DomainResponse,
+  EpochApproveResponse,
+  EpochProposeResponse,
+  EpochReport,
   ExportRequest,
   ExportResponse,
   FeedbackRequest,
   FeedbackResponse,
   Gap,
+  HealthResponse,
   ModelSpec,
   SessionResponse,
   SimulateRequest,
@@ -297,4 +305,36 @@ export function postFeedback(
     { method: "POST", body },
     () => mockFeedback(sessionId, body),
   );
+}
+
+/* --------------------------------------------------------------------- */
+/* Admin / RQGM epoch-evolution endpoints                                 */
+/* --------------------------------------------------------------------- */
+
+/** GET /api/admin/report — RQGM transparency report for the current champion. */
+export function getReport(): Promise<EpochReport> {
+  return request("/api/admin/report", { method: "GET" }, mockReport);
+}
+
+/** POST /api/admin/epoch/propose — GEPA Pareto-frontier population search. */
+export function proposeEpoch(): Promise<EpochProposeResponse> {
+  return request("/api/admin/epoch/propose", { method: "POST" }, mockProposeEpoch);
+}
+
+/**
+ * POST /api/admin/epoch/approve — two-stage gate. The code gate runs first and
+ * can block regardless of `approve`; the HITL boolean is a veto-only safety lock
+ * that is consulted ONLY after the code gate passes.
+ */
+export function approveEpoch(approve: boolean): Promise<EpochApproveResponse> {
+  return request(
+    "/api/admin/epoch/approve",
+    { method: "POST", body: { approve } },
+    () => mockApproveEpoch(approve),
+  );
+}
+
+/** GET /health — includes the compact `evaluator` summary (val/test sep, κ, …). */
+export function getHealth(): Promise<HealthResponse> {
+  return request("/health", { method: "GET" }, mockHealth);
 }
