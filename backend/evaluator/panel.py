@@ -15,10 +15,13 @@ and applies bias controls:
 * **panel diversity** — multiple personas/temperatures mitigate single-judge
   position/self-preference bias. A per-request ``seed`` keeps each judge
   reproducible WITHOUT collapsing temperature (the panel stays diverse);
-* **cross-model judge (config option)** — a persona may carry its own model id
-  (``(name, temperature, model)``) or the whole panel a ``judge_model``, so
-  different judges (less likely to share a blind spot) can score the same
-  candidate;
+* **cross-model judge (wired via config/env)** — a persona may carry its own model
+  id (``(name, temperature, model)``) or the whole panel a ``judge_model``; and
+  :func:`resolve_panel` routes ONE seat to a different model family when
+  ``AGENTFORGE_CROSS_MODEL`` (env) or ``evaluate_panel(cross_model=...)`` is set, so
+  a judge less likely to share the primary model's blind spot / self-preference
+  scores the same candidate (offline the mock ignores the id → verdict stays
+  deterministic; a real different family needs a live model);
 * **length normalization** — deficit is a bounded sum of per-criterion penalties
   (not free-form), so a more verbose candidate cannot buy a lower deficit.
 
@@ -29,6 +32,7 @@ matters for a judge.
 
 from __future__ import annotations
 
+import os
 import random
 import re
 from dataclasses import dataclass, field
@@ -55,6 +59,32 @@ DEFAULT_PANEL: list[tuple[str, float]] = [
 ]
 
 DEFAULT_TAU = 0.3  # deficit >= tau => predicted "weak"
+
+# Cross-model judge config: route ONE panel seat to a DIFFERENT model family so the
+# panel does not share a single model's blind spots / self-preference bias. Both
+# are env-driven so a live deployment opts in without code changes; offline the
+# deterministic mock ignores the model id, so the verdict stays reproducible.
+ENV_CROSS_MODEL = "AGENTFORGE_CROSS_MODEL"   # model id for the different-family seat
+ENV_PANEL_MODEL = "AGENTFORGE_PANEL_MODEL"   # (optional) model for the rest of the panel
+
+
+def resolve_panel(
+    personas: list[tuple] | None = None, *, cross_model: str | None = None
+) -> list[tuple]:
+    """Return the panel, pinning the LAST seat to a different-family model if configured.
+
+    A single LLM-as-judge (and a same-family panel) shares self-preference and
+    blind spots. When ``cross_model`` (arg) or ``AGENTFORGE_CROSS_MODEL`` (env) is
+    set, the last persona is routed to that model — a genuinely different family is
+    less likely to endorse the same gamed answer. The other seats keep the panel
+    default model. A no-op when unset (same-family panel = the prior behaviour).
+    """
+    base = [tuple(p) for p in (personas if personas is not None else DEFAULT_PANEL)]
+    cm = cross_model if cross_model is not None else os.getenv(ENV_CROSS_MODEL)
+    if not cm or not base:
+        return base
+    name, temp = str(base[-1][0]), float(base[-1][1])
+    return base[:-1] + [(name, temp, cm)]
 
 _CRITERION_BLOCK_RE = re.compile(r"[ \t]*<criterion\b.*?</criterion>\s*", re.DOTALL)
 
@@ -137,6 +167,7 @@ def evaluate_panel(
     seed: int | None = None,
     position_swap: bool = False,
     judge_model: str | None = None,
+    cross_model: str | None = None,
     structured: bool | None = None,
 ) -> PanelEvaluation:
     """Run the judge panel on one candidate and aggregate by self-consistency.
@@ -149,7 +180,10 @@ def evaluate_panel(
     ``(name, temperature, model)`` tuple — the cross-model-judge config option).
     """
     client = client or get_lemonade_client()
-    personas = personas or DEFAULT_PANEL
+    if judge_model is None:
+        judge_model = os.getenv(ENV_PANEL_MODEL)
+    # Route one seat to a different model family if configured (self-preference debias).
+    personas = resolve_panel(personas, cross_model=cross_model)
     use_structured = structured if structured is not None else (not client.using_mock)
     response_format = judge_response_format() if use_structured else None
 
@@ -188,7 +222,8 @@ def evaluate_panel(
         for cid in flags_seen:
             flag_votes[cid] = flag_votes.get(cid, 0) + 1
         per_persona.append({"persona": name, "temperature": temp, "deficit": round(d, 4),
-                            "red_flags": sorted(flags_seen), "orientations": len(orientations)})
+                            "model": pmodel, "red_flags": sorted(flags_seen),
+                            "orientations": len(orientations)})
 
     med = median(deficits) if deficits else 0.5
     mean = sum(deficits) / len(deficits) if deficits else 0.5
@@ -227,6 +262,7 @@ def anchor_agreement(
     tau: float = DEFAULT_TAU,
     use_panel: bool = True,
     personas: list[tuple[str, float]] | None = None,
+    cross_model: str | None = None,
 ) -> dict[str, Any]:
     """Judge/human agreement over ``anchors`` (accuracy + Cohen's κ + confusion)."""
     client = client or get_lemonade_client()
@@ -238,7 +274,7 @@ def anchor_agreement(
         if use_panel:
             pe = evaluate_panel(
                 cand, rubric_text, domain_id=a.get("domain"), epoch=epoch,
-                client=client, personas=personas, tau=tau,
+                client=client, personas=personas, tau=tau, cross_model=cross_model,
             )
             deficit = pe.deficit_median
         else:

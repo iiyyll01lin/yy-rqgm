@@ -273,7 +273,7 @@ frontier 的 `adversarial` 目標由一個 self-play 紅隊供料（[`backend/ev
 
 - **多 persona / 溫度**：預設 `principal_reliability_engineer@0.1`、`safety_auditor@0.3`、`adversarial_red_teamer@0.6`。
 - **self-consistency 聚合**：deficit 取 **median**、red flag 取**多數決**。
-- **bias 控制**：criterion 順序 **seeded 隨機化**（verdict 不得依賴排序）；length-normalization 因 deficit 是 bounded per-criterion 加總而**內建**。
+- **bias 控制**：criterion 順序 **seeded 隨機化**（verdict 不得依賴排序）；length-normalization 因 deficit 是 bounded per-criterion 加總而**內建**；**cross-model judge（已接線）**——`AGENTFORGE_CROSS_MODEL`（env）或 `evaluate_panel(cross_model=...)` 把 panel 其中一席路由到**不同家族**模型（[`resolve_panel`](../backend/evaluator/panel.py)），打掉 self-preference bias（同家族 panel 會共享盲點）。**offline 誠實邊界**：deterministic mock 忽略 model id，故 verdict 仍可重現；真正的跨家族評分需 live 模型。
 - **校準指標**：`anchor_agreement()` 回報 judge 與人類標註的 **accuracy + Cohen's κ**（不是原始 separation）——這才是衡量「裁判準不準」的指標，於 `GET /api/admin/report` 與 `/health` 曝露。
   - 釐清：**晉升 gate（§6.2）仍以 separation 的統計下界**判定；accuracy/κ 是**校準/透明度**指標，兩者並存不衝突。
   - **offline 誠實邊界**：panel 成員間的歧異由 mock 的 deterministic per-persona jitter 模擬，好讓 self-consistency 有東西可聚合；真多樣性需 live 模型。
