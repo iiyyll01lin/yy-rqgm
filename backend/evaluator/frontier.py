@@ -1,0 +1,201 @@
+"""Pareto frontier for GEPA population search over evaluator rubrics.
+
+Instead of a single mutation lineage (the shipped ``propose_challenger``), the
+proposer maintains a **population** of challenger rubrics and keeps the top-K
+*non-dominated* members across multiple objectives (EvoSkill-style Pareto
+frontier). Objectives:
+
+* ``sep::<criterion>`` — per-criterion weak-vs-strong separation on VAL, derived
+  from the judge's per-criterion penalties (rewards a rubric that adds coverage
+  for a specific failure mode / poison pill);
+* ``adversarial`` — separation on self-play red-team samples (Phase 3): rubrics
+  that stay stringent on gamed architectures score higher;
+* ``parsimony`` — ``-(# GEPA-added criteria)``: keeps a real trade-off on the
+  frontier (broad coverage vs. minimal rubric) so evolution does not collapse to
+  a single lineage.
+
+The frontier's best member (by BBε-style separation lower bound on VAL) is the
+one handed to the code gate. The whole frontier is persisted to ``data/frontier``
+for reproducibility.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from statistics import mean
+from typing import Any
+
+from backend.evaluator import anchors as anchor_ds
+from backend.evaluator.gate import separation_lower_bound
+from backend.evaluator.judge import score_candidate
+from backend.inference.lemonade_client import LemonadeClient
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_FRONTIER_DIR = _REPO_ROOT / "data" / "frontier"
+
+PARSIMONY = "parsimony"
+ADVERSARIAL = "adversarial"
+
+
+@dataclass
+class FrontierMember:
+    version: str
+    rubric_text: str
+    objectives: dict[str, float]
+    bbe: float
+    added_criteria: list[str] = field(default_factory=list)
+    parent_version: str = ""
+    val_deficits: dict[str, float] = field(default_factory=dict)
+
+    def public_dict(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "objectives": {k: round(v, 4) for k, v in self.objectives.items()},
+            "bbe": round(self.bbe, 4),
+            "added_criteria": self.added_criteria,
+            "parent_version": self.parent_version,
+        }
+
+
+def _dominates(a: dict[str, float], b: dict[str, float]) -> bool:
+    """True iff objective vector ``a`` Pareto-dominates ``b`` (maximisation)."""
+    keys = set(a) | set(b)
+    at_least_one_better = False
+    for k in keys:
+        av, bv = a.get(k, 0.0), b.get(k, 0.0)
+        if av < bv - 1e-9:
+            return False
+        if av > bv + 1e-9:
+            at_least_one_better = True
+    return at_least_one_better
+
+
+def _same_objectives(a: dict[str, float], b: dict[str, float]) -> bool:
+    keys = set(a) | set(b)
+    return all(abs(a.get(k, 0.0) - b.get(k, 0.0)) <= 1e-9 for k in keys)
+
+
+class ParetoFrontier:
+    """Top-K non-dominated set of challenger rubrics."""
+
+    def __init__(self, top_k: int = 8):
+        self.top_k = top_k
+        self.members: list[FrontierMember] = []
+
+    def add(self, member: FrontierMember) -> bool:
+        """Add ``member``; drop anything it dominates. Returns True if kept."""
+        for existing in self.members:
+            if existing.version == member.version:
+                continue
+            if _dominates(existing.objectives, member.objectives):
+                return False  # dominated by an incumbent frontier member
+            if _same_objectives(existing.objectives, member.objectives):
+                return False  # exact duplicate objective vector; keep the frontier lean
+        # Remove members dominated by the newcomer.
+        self.members = [
+            m for m in self.members if not _dominates(member.objectives, m.objectives)
+        ]
+        self.members.append(member)
+        if len(self.members) > self.top_k:
+            self.members.sort(key=lambda m: m.bbe, reverse=True)
+            self.members = self.members[: self.top_k]
+        return True
+
+    def best(self) -> FrontierMember | None:
+        """Best member by BBε-style VAL separation lower bound (gate candidate)."""
+        if not self.members:
+            return None
+        return max(self.members, key=lambda m: m.bbe)
+
+    def sample_stochastic(self, rng: Any) -> FrontierMember:
+        """Prefer higher-BBε members but keep diversity (weighted choice)."""
+        if len(self.members) == 1:
+            return self.members[0]
+        weights = [max(1e-3, m.bbe + 1.0) for m in self.members]
+        return rng.choices(self.members, weights=weights, k=1)[0]
+
+    def to_dict(self) -> dict[str, Any]:
+        best = self.best()
+        return {
+            "size": len(self.members),
+            "top_k": self.top_k,
+            "objectives": sorted({k for m in self.members for k in m.objectives}),
+            "best_version": best.version if best else None,
+            "members": [m.public_dict() for m in self.members],
+        }
+
+
+# ---------------------------------------------------------------------------
+# Objective computation
+# ---------------------------------------------------------------------------
+def compute_objectives(
+    rubric_text: str,
+    val_anchors: list[dict[str, Any]],
+    *,
+    domain_id: str | None = "smart_manufacturing",
+    epoch: int = 0,
+    client: LemonadeClient | None = None,
+    added_criteria: list[str] | None = None,
+    adversarial_samples: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, float], float, dict[str, float]]:
+    """Return ``(objectives, bbe, val_loose_deficits)`` for one rubric.
+
+    ``objectives`` = per-criterion separation (``sep::<id>``) + ``parsimony`` +
+    (if ``adversarial_samples`` given) an ``adversarial`` separation objective.
+    """
+    weak = anchor_ds.weak(val_anchors)
+    strong = anchor_ds.strong(val_anchors)
+    per_anchor: dict[str, dict[str, Any]] = {}
+    loose: dict[str, float] = {}
+    for a in val_anchors:
+        res = score_candidate(
+            anchor_ds.anchor_candidate_text(a), rubric_text,
+            domain_id=a.get("domain"), epoch=epoch, client=client,
+        )
+        per_anchor[a["id"]] = res
+        loose[a["id"]] = res["deficit_loose"]
+
+    criteria_ids = {c for r in per_anchor.values() for c in r["criterion_penalties"]}
+    objectives: dict[str, float] = {}
+    for cid in criteria_ids:
+        w = mean([per_anchor[a["id"]]["criterion_penalties"].get(cid, 0.0) for a in weak]) if weak else 0.0
+        s = mean([per_anchor[a["id"]]["criterion_penalties"].get(cid, 0.0) for a in strong]) if strong else 0.0
+        objectives[f"sep::{cid}"] = w - s
+
+    objectives[PARSIMONY] = -float(len(added_criteria or []))
+
+    if adversarial_samples:
+        adv_weak = [
+            score_candidate(anchor_ds.anchor_candidate_text(a), rubric_text,
+                            domain_id=a.get("domain"), epoch=epoch, client=client)["deficit_loose"]
+            for a in adversarial_samples
+        ]
+        # Reward staying STRINGENT (high deficit) on gamed samples.
+        objectives[ADVERSARIAL] = mean(adv_weak) if adv_weak else 0.0
+
+    bbe = separation_lower_bound(loose, val_anchors)
+    return objectives, bbe, loose
+
+
+# ---------------------------------------------------------------------------
+# Persistence (reproducibility)
+# ---------------------------------------------------------------------------
+def persist_frontier(frontier: ParetoFrontier, epoch: int, *, directory: Path | None = None) -> str:
+    """Write the frontier (rubric text of every member) to ``data/frontier``."""
+    directory = directory or _FRONTIER_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"epoch-{epoch}.json"
+    payload = {
+        "epoch": epoch,
+        "created_at": int(time.time()),
+        "summary": frontier.to_dict(),
+        "members": [
+            {**m.public_dict(), "rubric_text": m.rubric_text, "val_deficits": m.val_deficits}
+            for m in frontier.members
+        ],
+    }
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return str(path)
