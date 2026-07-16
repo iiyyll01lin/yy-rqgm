@@ -71,6 +71,15 @@ def embed(text: str, dim: int = EMBED_DIM) -> list[float]:
 
     Not a transformer — a cheap, offline, dependency-light stand-in that still
     gives useful lexical-semantic similarity for the PoC.
+
+    SEAM (live recall) — TODO: for a live deployment, swap this hashing BoW for a
+    real semantic embedder (e.g. a sentence-transformer, or the served model's
+    ``/v1/embeddings`` endpoint via :class:`LemonadeClient`) behind an env toggle
+    (e.g. ``AGENTFORGE_EMBEDDER``). Keep this deterministic hashing embed as the
+    offline default so the test suite stays offline/deterministic. The store API
+    (:meth:`EvolutionaryMemory.add` / :meth:`~EvolutionaryMemory.search`) does not
+    change — only this function is replaced. NOT built now (needs a live model /
+    GPU to be worth it; hashing BoW is adequate for the offline PoC).
     """
     vec = np.zeros(dim, dtype=np.float32)
     tokens = [t for t in _tokenize(text)]

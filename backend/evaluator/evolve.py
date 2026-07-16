@@ -20,7 +20,6 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -119,6 +118,24 @@ def _short_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
 
 
+def _challenger_hash(
+    side_info: str, new_criteria: list[dict[str, Any]], seed: int | str | None = None
+) -> str:
+    """Reproducible challenger id suffix.
+
+    Derived from the CONTENT that determines the challenger (its side-information
+    textual gradient + the sorted ids of the criteria it adds) plus an optional
+    injected ``seed``. This replaces the previous ``time.time()`` hash, which made
+    the version id — and therefore the archived rubric filename — nondeterministic
+    across otherwise-identical runs (bad for reproducibility / auditing).
+    """
+    ids = ",".join(sorted(str(c.get("id", "")) for c in new_criteria))
+    material = f"{side_info}\n{ids}"
+    if seed is not None:
+        material += f"\n{seed}"
+    return _short_hash(material)
+
+
 def _mutate_rubric_text(champion_text: str, new_criteria: list[dict], version: str, epoch: int) -> str:
     """Append de-duplicated criteria + bump ONLY the <evaluator> version, validate XML.
 
@@ -215,8 +232,16 @@ def propose_challenger(
     traces: list[dict[str, Any]] | None = None,
     domain_id: str | None = "smart_manufacturing",
     client: LemonadeClient | None = None,
+    *,
+    seed: int | str | None = None,
 ) -> ChallengerProposal:
-    """Reflectively mutate the champion rubric into a scored challenger."""
+    """Reflectively mutate the champion rubric into a scored challenger.
+
+    The challenger's version id is now reproducible: it is derived from the
+    side-information + added-criteria content (and an optional injected ``seed``),
+    NOT from wall-clock time. Identical inputs therefore yield an identical
+    version id and archived rubric filename across runs.
+    """
     client = client or get_lemonade_client()
     epoch = versioning.get_epoch()
     champion_text = versioning.get_champion_rubric_text()
@@ -229,7 +254,7 @@ def propose_challenger(
 
     reflection, proposed_changes, new_criteria = reflect_and_mutate(champion_text, side_info, epoch, client)
 
-    version = f"challenger-e{epoch}-{_short_hash(side_info + str(time.time()))}"
+    version = f"challenger-e{epoch}-{_challenger_hash(side_info, new_criteria, seed)}"
     rubric_text = _mutate_rubric_text(champion_text, new_criteria, version, epoch)
     rubric_diff = "".join(
         difflib.unified_diff(
@@ -404,9 +429,14 @@ def propose_via_frontier(
     budget: int = 6,
     client: LemonadeClient | None = None,
     adversarial_samples: list[dict[str, Any]] | None = None,
+    *,
+    seed: int = 1234,
 ) -> tuple[ChallengerProposal, ParetoFrontier]:
     """Run ``gepa_evolve`` and register the frontier's best member as the
-    challenger handed to the code gate. Persists the whole frontier for repro."""
+    challenger handed to the code gate. Persists the whole frontier for repro.
+
+    ``seed`` controls the frontier's stochastic parent selection (threaded to
+    ``gepa_evolve``) and the single-mutation fallback's reproducible id."""
     client = client or get_lemonade_client()
     epoch = versioning.get_epoch()
     champion_text = versioning.get_champion_rubric_text()
@@ -414,13 +444,15 @@ def propose_via_frontier(
 
     frontier = gepa_evolve(
         champion_text, epoch=epoch, domain_id=domain_id, budget=budget,
-        client=client, adversarial_samples=adversarial_samples,
+        client=client, adversarial_samples=adversarial_samples, seed=seed,
     )
     best = frontier.best()
     # If the frontier never beat the incumbent, fall back to a single mutation so
     # the endpoint always yields a concrete challenger for the gate to judge.
     if best is None or best.version == champion_version:
-        proposal = propose_challenger(feedback=feedback, traces=traces, domain_id=domain_id, client=client)
+        proposal = propose_challenger(
+            feedback=feedback, traces=traces, domain_id=domain_id, client=client, seed=seed
+        )
         return proposal, frontier
 
     rubric_diff = "".join(

@@ -25,6 +25,13 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
+# ``rqgm`` is a HARD dependency (see pyproject ``dependencies``), so the primary
+# branch below is the one that actually runs in every correctly-installed
+# environment — it is covered by the test suite (and pinned by
+# ``tests/test_live_wiring.py::test_rqgm_backend_is_the_real_package``). The
+# ``except`` fallback is the branch that is NEVER covered in that environment
+# (it only runs if the wheel is somehow unavailable, e.g. a broken air-gapped
+# install), so the ``# pragma: no cover`` belongs on the FALLBACK, not here.
 try:  # primary path: the official package (installed from PyPI, offline-cacheable)
     from rqgm import (
         DEFAULT_TOLERANCES,
@@ -37,7 +44,7 @@ try:  # primary path: the official package (installed from PyPI, offline-cacheab
 
     RQGM_BACKEND = "rqgm"
     _RQGM_AVAILABLE = True
-except Exception:  # pragma: no cover - exercised only when the wheel is absent
+except Exception:  # pragma: no cover - fallback only if the rqgm wheel is unavailable
     DEFAULT_TOLERANCES = [0.0, 0.001, 0.01, 0.025, 0.05, 0.1]
     MIN_TOLERANCE_LEVELS = 2
     RQGM_BACKEND = "local-fallback"

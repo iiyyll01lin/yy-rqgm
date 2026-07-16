@@ -27,6 +27,73 @@ _VALID_SEVERITY = {"low", "medium", "high", "critical"}
 SCORING_LOOSE = "loose"
 SCORING_STRICT = "strict"
 
+# ---------------------------------------------------------------------------
+# Structured-output contract (LIVE path)
+# ---------------------------------------------------------------------------
+# The offline mock always returns exact per-criterion penalties. A live model, if
+# left unconstrained, tends to omit them — forcing us to APPROXIMATE penalties
+# from red-flag severities (see :func:`_criterion_penalties_from_flags`), which
+# degrades the frontier's ``sep::<criterion>`` objectives. To avoid that we send
+# an explicit JSON-schema / guided-decoding contract on the live path so the model
+# returns per-criterion penalties directly. We still validate + fall back
+# gracefully (a non-conforming server never breaks the pipeline).
+JUDGE_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "deficit_loose": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "deficit_strict": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "criterion_penalties": {
+            "type": "object",
+            "description": "Per-criterion deficit contribution keyed by rubric criterion id.",
+            "additionalProperties": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        },
+        "red_flags": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "criterion": {"type": "string"},
+                    "severity": {"type": "string", "enum": sorted(_VALID_SEVERITY)},
+                    "detail": {"type": "string"},
+                },
+                "required": ["criterion", "severity"],
+            },
+        },
+        "hack_ratio": {"type": ["number", "null"]},
+        "reasoning": {"type": "string"},
+    },
+    "required": ["deficit_loose", "criterion_penalties", "red_flags"],
+}
+
+
+def judge_response_format() -> dict[str, Any]:
+    """OpenAI-compatible ``response_format`` enforcing :data:`JUDGE_OUTPUT_SCHEMA`.
+
+    vLLM honours this via guided decoding; Lemonade / other servers that ignore it
+    still work because :func:`evaluate_architecture` validates and falls back.
+    """
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": "rqgm_judge_verdict", "schema": JUDGE_OUTPUT_SCHEMA, "strict": False},
+    }
+
+
+def _coerce_penalties(raw_pen: Any) -> dict[str, float] | None:
+    """Validate a structured ``criterion_penalties`` object.
+
+    Returns a clean ``{criterion_id: float}`` map, or ``None`` if the payload is
+    missing/malformed so the caller can fall back to flag-derived penalties.
+    """
+    if not isinstance(raw_pen, dict) or not raw_pen:
+        return None
+    out: dict[str, float] = {}
+    for k, v in raw_pen.items():
+        try:
+            out[str(k)] = float(v)
+        except (TypeError, ValueError):
+            return None
+    return out
+
 
 @dataclass(frozen=True)
 class RedFlag:
@@ -207,6 +274,8 @@ def evaluate_architecture(
     *,
     inject_memory: bool = True,
     memory: Any = None,
+    seed: int | None = None,
+    structured: bool | None = None,
 ) -> Evaluation:
     """Score ``architecture`` against the champion rubric for ``domain_id``.
 
@@ -214,17 +283,28 @@ def evaluate_architecture(
     neutral 0.5 deficit with a ``parse_error`` red flag rather than raising.
     When ``inject_memory`` is set, relevant heuristic_failure + physics_truth
     memories are hybrid-search retrieved and injected into the judge prompt.
+
+    ``seed`` threads a deterministic per-request seed to the model (reproducible
+    live sampling without collapsing temperature). ``structured`` toggles the
+    JSON-schema output contract; when ``None`` (default) it is enabled
+    automatically on the live path and disabled for the offline mock (which
+    already returns exact per-criterion penalties).
     """
     client = client or get_lemonade_client()
     epoch = versioning.get_epoch() if epoch is None else epoch
     version = versioning.get_champion_version()
     rubric_text = rubric_text if rubric_text is not None else versioning.get_champion_rubric_text()
 
+    use_structured = structured if structured is not None else (not client.using_mock)
+    response_format = judge_response_format() if use_structured else None
+
     memory_block = retrieve_memory_block(architecture, epoch, memory) if inject_memory else None
     messages = build_rubric_prompt(
         architecture, domain_id, epoch, rubric_text, scoring_mode=SCORING_LOOSE, memory_block=memory_block
     )
-    raw = client.chat(messages, temperature=0.1, max_tokens=900)
+    raw = client.chat(
+        messages, temperature=0.1, max_tokens=900, seed=seed, response_format=response_format
+    )
 
     parsed = extract_json(raw)
     if parsed is None:
@@ -256,8 +336,11 @@ def evaluate_architecture(
     except (TypeError, ValueError):
         strict = loose
     red_flags = _coerce_red_flags(parsed.get("red_flags"))
-    crit_pen = parsed.get("criterion_penalties")
-    if not isinstance(crit_pen, dict):
+    # Prefer the model's explicit per-criterion penalties (the structured contract
+    # asks for them). Only APPROXIMATE from red-flag severities if the payload is
+    # missing/malformed — otherwise the frontier's sep::<criterion> objectives degrade.
+    crit_pen = _coerce_penalties(parsed.get("criterion_penalties"))
+    if crit_pen is None:
         crit_pen = _criterion_penalties_from_flags(red_flags)
     quality_loose = 1.0 - loose
     hack_ratio = parsed.get("hack_ratio")
@@ -285,16 +368,30 @@ def score_candidate(
     domain_id: str | None = None,
     epoch: int = 0,
     client: LemonadeClient | None = None,
+    *,
+    seed: int | None = None,
+    structured: bool | None = None,
 ) -> dict[str, Any]:
     """Score one candidate under ``rubric_text`` in BOTH loose and strict modes.
 
     Returns ``{deficit_loose, deficit_strict, hack_ratio, red_flags,
     criterion_penalties}``. The offline mock returns both deficits from a single
-    call; a live model gets a second (strict) call so poison pills are applied.
+    call; a live model gets a second (strict) call so the poison pills are
+    actually applied — this is what keeps strict != loose (and ``hack_ratio`` off
+    a trivial ~1.0) on the live path, not just offline.
+
+    ``seed``/``structured`` mirror :func:`evaluate_architecture`: a reproducible
+    per-request seed and the JSON-schema contract (auto-enabled on the live path)
+    so the live model returns explicit per-criterion penalties.
     """
     client = client or get_lemonade_client()
+    use_structured = structured if structured is not None else (not client.using_mock)
+    response_format = judge_response_format() if use_structured else None
+
     loose_msgs = build_rubric_prompt(candidate_text, domain_id, epoch, rubric_text, scoring_mode=SCORING_LOOSE)
-    loose_parsed = extract_json(client.chat(loose_msgs, temperature=0.1, max_tokens=900)) or {}
+    loose_parsed = extract_json(
+        client.chat(loose_msgs, temperature=0.1, max_tokens=900, seed=seed, response_format=response_format)
+    ) or {}
 
     def _f(d: dict, *keys: str, default: float = 0.5) -> float:
         for k in keys:
@@ -307,8 +404,8 @@ def score_candidate(
 
     deficit_loose = _f(loose_parsed, "deficit_loose", "deficit_score")
     red_flags = _coerce_red_flags(loose_parsed.get("red_flags"))
-    crit_pen = loose_parsed.get("criterion_penalties")
-    if not isinstance(crit_pen, dict):
+    crit_pen = _coerce_penalties(loose_parsed.get("criterion_penalties"))
+    if crit_pen is None:
         crit_pen = _criterion_penalties_from_flags(red_flags)
 
     if "deficit_strict" in loose_parsed:
@@ -317,7 +414,9 @@ def score_candidate(
         strict_msgs = build_rubric_prompt(
             candidate_text, domain_id, epoch, rubric_text, scoring_mode=SCORING_STRICT
         )
-        strict_parsed = extract_json(client.chat(strict_msgs, temperature=0.1, max_tokens=900)) or {}
+        strict_parsed = extract_json(
+            client.chat(strict_msgs, temperature=0.1, max_tokens=900, seed=seed, response_format=response_format)
+        ) or {}
         deficit_strict = _f(strict_parsed, "deficit_strict", "deficit_score", default=deficit_loose)
 
     quality_loose = 1.0 - deficit_loose

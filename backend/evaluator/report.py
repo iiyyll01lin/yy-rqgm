@@ -8,6 +8,7 @@ current champion so the frontend / docs can show honest, reproducible numbers.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -16,10 +17,70 @@ from backend.evaluator import adversarial, anchors as anchor_ds
 from backend.evaluator import panel, rqgm_adapter, versioning
 from backend.evaluator.gate import _separation
 from backend.evaluator.judge import score_candidate
-from backend.inference.lemonade_client import LemonadeClient
+from backend.inference.lemonade_client import (
+    DEFAULT_MODEL,
+    LemonadeClient,
+    get_lemonade_client,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _FRONTIER_DIR = _REPO_ROOT / "data" / "frontier"
+
+
+def _git_sha() -> str | None:
+    """Best-effort current git commit SHA (offline, no subprocess).
+
+    Reads ``.git/HEAD`` and the referenced ref (with a packed-refs fallback) so a
+    report can be tied to the exact source revision that produced it. Returns
+    ``None`` when repo metadata is unavailable (e.g. running from a built wheel).
+    """
+    git_dir = _REPO_ROOT / ".git"
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+    if not head.startswith("ref:"):
+        return head or None
+    ref = head.split(" ", 1)[1].strip()
+    try:
+        return (git_dir / ref).read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    try:
+        for line in (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith(("#", "^")):
+                continue
+            sha, _, name = line.partition(" ")
+            if name.strip() == ref:
+                return sha.strip()
+    except Exception:
+        return None
+    return None
+
+
+def _provenance(client: LemonadeClient | None) -> dict[str, Any]:
+    """Reproducibility provenance: judge model id + git SHA + backend.
+
+    Additive metadata — it records WHICH model and source revision produced the
+    numbers so a report is reproducible/auditable. On a live run this is the real
+    served model id; offline it is the configured default and ``using_mock`` True.
+    """
+    resolved = client or get_lemonade_client()
+    try:
+        judge_model = resolved.model or os.getenv("LEMONADE_MODEL", DEFAULT_MODEL)
+    except Exception:
+        judge_model = os.getenv("LEMONADE_MODEL", DEFAULT_MODEL)
+    try:
+        using_mock = bool(resolved.using_mock)
+    except Exception:
+        using_mock = None
+    return {
+        "judge_model": judge_model,
+        "using_mock": using_mock,
+        "rqgm_backend": rqgm_adapter.RQGM_BACKEND,
+        "git_sha": _git_sha(),
+    }
 
 
 def _split_separation(
@@ -143,6 +204,7 @@ def build_report(client: LemonadeClient | None = None, *, include_agreement: boo
         "epoch_id": epoch,
         "champion_version": champion_version,
         "rqgm_backend": rqgm_adapter.RQGM_BACKEND,
+        "provenance": _provenance(client),
         "data_splits": anchor_ds.split_counts(),
         "separation": separation,
         "over_optimization": over_optimization,

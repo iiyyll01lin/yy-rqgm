@@ -7,8 +7,18 @@ and applies bias controls:
 
 * **criterion-order randomization** — each persona sees the rubric criteria in a
   different (seeded) order, so verdicts cannot depend on ordering;
+* **AB/BA position-swap** — with ``position_swap`` each persona scores the
+  candidate under BOTH the given criteria order (AB) and the reversed order (BA)
+  and the two deficits are averaged, cancelling any residual position/primacy
+  bias in a single live judge (offline the deterministic mock is order-invariant,
+  so this is a no-op there — behaviour stays deterministic);
 * **panel diversity** — multiple personas/temperatures mitigate single-judge
-  position/self-preference bias;
+  position/self-preference bias. A per-request ``seed`` keeps each judge
+  reproducible WITHOUT collapsing temperature (the panel stays diverse);
+* **cross-model judge (config option)** — a persona may carry its own model id
+  (``(name, temperature, model)``) or the whole panel a ``judge_model``, so
+  different judges (less likely to share a blind spot) can score the same
+  candidate;
 * **length normalization** — deficit is a bounded sum of per-criterion penalties
   (not free-form), so a more verbose candidate cannot buy a lower deficit.
 
@@ -32,6 +42,7 @@ from backend.evaluator.judge import (
     _clamp,
     _coerce_red_flags,
     build_rubric_prompt,
+    judge_response_format,
 )
 from backend.inference.lemonade_client import LemonadeClient, get_lemonade_client
 from backend.inference.parsing import extract_json
@@ -70,6 +81,16 @@ class PanelEvaluation:
         }
 
 
+def _reorder_criteria(rubric_text: str, ordered_blocks: list[str], original_blocks: list[str]) -> str:
+    """Splice ``ordered_blocks`` back into ``rubric_text`` in place of the originals."""
+    out = rubric_text
+    for b in original_blocks:
+        out = out.replace(b, "\u0000CRIT\u0000", 1)
+    for b in ordered_blocks:
+        out = out.replace("\u0000CRIT\u0000", b, 1)
+    return out
+
+
 def _shuffle_criteria(rubric_text: str, seed: int) -> str:
     """Bias control: randomize the order criteria appear in (seeded, reversible)."""
     blocks = _CRITERION_BLOCK_RE.findall(rubric_text)
@@ -78,14 +99,28 @@ def _shuffle_criteria(rubric_text: str, seed: int) -> str:
     rng = random.Random(seed)
     shuffled = blocks[:]
     rng.shuffle(shuffled)
-    out = rubric_text
-    # Replace the first criterion block with a placeholder run, then re-inject in
-    # shuffled order. Simplest robust approach: remove all, then splice back.
-    for b in blocks:
-        out = out.replace(b, "\u0000CRIT\u0000", 1)
-    for b in shuffled:
-        out = out.replace("\u0000CRIT\u0000", b, 1)
-    return out
+    return _reorder_criteria(rubric_text, shuffled, blocks)
+
+
+def _reverse_criteria(rubric_text: str) -> str:
+    """Bias control: present the criteria in reversed order (the 'BA' of AB/BA)."""
+    blocks = _CRITERION_BLOCK_RE.findall(rubric_text)
+    if len(blocks) < 2:
+        return rubric_text
+    return _reorder_criteria(rubric_text, list(reversed(blocks)), blocks)
+
+
+def _persona_spec(spec: Any, default_model: str | None) -> tuple[str, float, str | None]:
+    """Unpack a persona entry into ``(name, temperature, model)``.
+
+    A persona is ``(name, temperature)`` or, to enable a CROSS-MODEL panel (a
+    config option: different judges are less likely to share the same blind
+    spot), ``(name, temperature, model)``. ``default_model`` (the panel-level
+    ``judge_model``) is used when a persona does not pin its own.
+    """
+    if len(spec) >= 3:
+        return str(spec[0]), float(spec[1]), (spec[2] or default_model)
+    return str(spec[0]), float(spec[1]), default_model
 
 
 def evaluate_panel(
@@ -95,32 +130,65 @@ def evaluate_panel(
     domain_id: str | None = None,
     epoch: int = 0,
     client: LemonadeClient | None = None,
-    personas: list[tuple[str, float]] | None = None,
+    personas: list[tuple] | None = None,
     randomize_order: bool = True,
     tau: float = DEFAULT_TAU,
     memory_block: str | None = None,
+    seed: int | None = None,
+    position_swap: bool = False,
+    judge_model: str | None = None,
+    structured: bool | None = None,
 ) -> PanelEvaluation:
-    """Run the judge panel on one candidate and aggregate by self-consistency."""
+    """Run the judge panel on one candidate and aggregate by self-consistency.
+
+    ``seed`` seeds each persona reproducibly (persona ``i`` uses ``seed + i``)
+    without collapsing its temperature, so a fixed seed makes a live panel
+    reproducible while KEEPING persona/temperature diversity. ``position_swap``
+    enables AB/BA order-swap debiasing (see the module docstring). ``judge_model``
+    overrides the model for every persona (a persona may still pin its own via a
+    ``(name, temperature, model)`` tuple — the cross-model-judge config option).
+    """
     client = client or get_lemonade_client()
     personas = personas or DEFAULT_PANEL
+    use_structured = structured if structured is not None else (not client.using_mock)
+    response_format = judge_response_format() if use_structured else None
 
     per_persona: list[dict[str, Any]] = []
     deficits: list[float] = []
     flag_votes: dict[str, int] = {}
-    for i, (name, temp) in enumerate(personas):
-        rt = _shuffle_criteria(rubric_text, seed=i) if randomize_order else rubric_text
-        msgs = build_rubric_prompt(
-            architecture, domain_id, epoch, rt,
-            scoring_mode=SCORING_LOOSE, memory_block=memory_block, persona=f"{name}@T={temp}",
-        )
-        parsed = extract_json(client.chat(msgs, temperature=temp, max_tokens=900)) or {}
-        d = _clamp(float(parsed.get("deficit_loose", parsed.get("deficit_score", 0.5))))
-        flags = _coerce_red_flags(parsed.get("red_flags"))
+    for i, spec in enumerate(personas):
+        name, temp, pmodel = _persona_spec(spec, judge_model)
+        base_rt = _shuffle_criteria(rubric_text, seed=i) if randomize_order else rubric_text
+        # AB/BA position swap: score under the given order AND the reversed order.
+        orientations = [base_rt] + ([_reverse_criteria(base_rt)] if position_swap else [])
+        persona_seed = None if seed is None else seed + i
+
+        run_deficits: list[float] = []
+        flags_seen: set[str] = set()
+        for j, rt in enumerate(orientations):
+            msgs = build_rubric_prompt(
+                architecture, domain_id, epoch, rt,
+                scoring_mode=SCORING_LOOSE, memory_block=memory_block, persona=f"{name}@T={temp}",
+            )
+            # Distinct (still deterministic) seed per orientation so AB and BA are
+            # not identical samples on the live path.
+            run_seed = None if persona_seed is None else persona_seed + 10_000 * j
+            parsed = extract_json(
+                client.chat(
+                    msgs, model=pmodel, temperature=temp, max_tokens=900,
+                    seed=run_seed, response_format=response_format,
+                )
+            ) or {}
+            run_deficits.append(_clamp(float(parsed.get("deficit_loose", parsed.get("deficit_score", 0.5)))))
+            for rf in _coerce_red_flags(parsed.get("red_flags")):
+                flags_seen.add(rf.criterion)
+
+        d = sum(run_deficits) / len(run_deficits)
         deficits.append(d)
-        for cid in {rf.criterion for rf in flags}:
+        for cid in flags_seen:
             flag_votes[cid] = flag_votes.get(cid, 0) + 1
         per_persona.append({"persona": name, "temperature": temp, "deficit": round(d, 4),
-                            "red_flags": [rf.criterion for rf in flags]})
+                            "red_flags": sorted(flags_seen), "orientations": len(orientations)})
 
     med = median(deficits) if deficits else 0.5
     mean = sum(deficits) / len(deficits) if deficits else 0.5
