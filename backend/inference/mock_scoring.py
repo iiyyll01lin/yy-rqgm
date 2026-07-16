@@ -231,6 +231,11 @@ def score(architecture: str, rubric_text: str) -> dict[str, Any]:
             # Ground-truth poison pill the current rubric MISSES (blind spot).
             poison_extra += penalty
 
+    # ``strict = loose + poison_extra`` is the OFFLINE analogue of the live strict
+    # reward-hacking audit (judge.score_candidate): live, ``deficit_strict = loose +
+    # Σ penalty(unmitigated poison pill)``; here the "unmitigated pills" are exactly
+    # the poison flaws present that the current rubric has no criterion to catch. So
+    # both paths mean the same thing — strict adds the poison the loose reading misses.
     loose = _clamp(BASE_DEFICIT - strength_bonus + caught_penalty)
     strict = _clamp(BASE_DEFICIT - strength_bonus + caught_penalty + poison_extra)
 

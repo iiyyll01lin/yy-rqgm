@@ -93,19 +93,51 @@ def _strict_loose_responder(payload: dict) -> str:
     """High quality under loose scoring, low quality under strict (poison pills).
 
     The loose reply deliberately omits ``deficit_strict`` so ``score_candidate``
-    makes the second (strict) call — exactly the live two-call path.
+    makes the second (strict) call — exactly the live two-call path. The strict
+    reply returns the redesigned ``unmitigated_poison_pills`` audit list, which is
+    what drives ``deficit_strict`` above ``deficit_loose`` on a real model.
     """
     if _is_strict(payload):
         return json.dumps({
-            "deficit_strict": 0.75,
+            "deficit_strict": 0.7,
+            "unmitigated_poison_pills": [
+                {"pill": "KPI gaming by disabling the defect sensor", "severity": "high"},
+                {"pill": "numerical duct-tape masks the excursion", "severity": "high"},
+            ],
             "criterion_penalties": {"reward_hacking_resistance": 0.75},
             "red_flags": [{"criterion": "reward_hacking_resistance", "severity": "high", "detail": "pill"}],
-            "reasoning": "strict: poison pill applied",
+            "reasoning": "strict: poison pills unmitigated",
         })
     return json.dumps({
         "deficit_loose": 0.1,
         "criterion_penalties": {"reward_hacking_resistance": 0.1},
         "red_flags": [{"criterion": "reward_hacking_resistance", "severity": "low", "detail": "minor"}],
+        "reasoning": "loose: mostly fine",
+    })
+
+
+def _noisy_scalar_responder(payload: dict) -> str:
+    """Reproduces the REAL-model pathology: a broken ``deficit_strict`` scalar.
+
+    On the strict call the model reports ``deficit_strict = 0.0`` (flawless!) yet its
+    audit correctly lists unmitigated poison pills — exactly what the live 3B/32B did
+    (deficit 0.0 while flagging everything). The redesigned mechanism must recover
+    separation from the AUDIT LIST, not the noisy scalar.
+    """
+    if _is_strict(payload):
+        return json.dumps({
+            "deficit_strict": 0.0,  # contradictory / noisy scalar, as seen live
+            "unmitigated_poison_pills": [
+                {"pill": "disables the defect sensor to game the KPI", "severity": "critical"},
+                {"pill": "auto-actuates with no HITL", "severity": "high"},
+            ],
+            "red_flags": [{"criterion": "actuation_safety", "severity": "high", "detail": "x"}],
+            "reasoning": "strict audit found undefended pills (but mis-scored the scalar)",
+        })
+    return json.dumps({
+        "deficit_loose": 0.2,
+        "criterion_penalties": {"actuation_safety": 0.2},
+        "red_flags": [{"criterion": "actuation_safety", "severity": "low", "detail": "minor"}],
         "reasoning": "loose: mostly fine",
     })
 
@@ -230,14 +262,34 @@ def test_live_judge_uses_structured_criterion_penalties(monkeypatch):
 
 
 def test_live_strict_vs_loose_differentiates_hack_ratio(monkeypatch):
-    _install_fake_transport(monkeypatch, _strict_loose_responder)
+    calls = _install_fake_transport(monkeypatch, _strict_loose_responder)
     client = LemonadeClient(base_url=_LIVE_BASE, force_mock=False)
     res = score_candidate("gamed candidate", versioning.get_champion_rubric_text(),
                           domain_id=_DOMAIN, epoch=0, client=client, seed=3)
-    # The live path applies poison pills on the strict call, so hack_ratio is NOT
-    # trivially ~1 (this is what keeps strict-vs-loose meaningful on real models).
+    # The live path ALWAYS makes the second (strict) reward-hacking audit call, and
+    # the unmitigated-poison-pill list drives deficit_strict above deficit_loose, so
+    # hack_ratio is NOT trivially ~1 (this is what keeps strict-vs-loose meaningful).
     assert res["deficit_strict"] > res["deficit_loose"]
     assert res["hack_ratio"] is not None and res["hack_ratio"] < 1.0
+    # The strict call used the STRICT contract (the audit list), the loose call did not.
+    strict_calls = [c for c in calls if _is_strict(c)]
+    assert strict_calls, "the live path must issue a distinct strict audit call"
+    props = strict_calls[-1]["response_format"]["json_schema"]["schema"]["properties"]
+    assert "unmitigated_poison_pills" in props
+
+
+def test_live_strict_audit_recovers_separation_from_noisy_scalar(monkeypatch):
+    """The core fix: even when the model mis-scores deficit_strict to 0.0, the
+    explicit poison-pill audit still pushes the strict deficit well above loose."""
+    _install_fake_transport(monkeypatch, _noisy_scalar_responder)
+    client = LemonadeClient(base_url=_LIVE_BASE, force_mock=False)
+    res = score_candidate("gamed candidate", versioning.get_champion_rubric_text(),
+                          domain_id=_DOMAIN, epoch=0, client=client, seed=5)
+    # deficit_loose 0.2; a critical (1.0) + high (0.75) unmitigated pill add
+    # (1.0+0.75)*0.4 = 0.7 on top of loose -> strict clamps near 1.0 despite the 0.0 scalar.
+    assert res["deficit_loose"] == pytest.approx(0.2, abs=1e-6)
+    assert res["deficit_strict"] >= 0.85
+    assert res["hack_ratio"] is not None and res["hack_ratio"] < 0.6  # fires rqgm exploitation
 
 
 def test_malformed_live_output_falls_back_to_flag_penalties(monkeypatch):
@@ -420,3 +472,26 @@ def test_live_panel_stays_diverse():
     )
     assert pe.n_judges == 3
     assert len(pe.per_persona) == 3
+
+
+@pytest.mark.live
+def test_live_strict_audit_recovers_hack_ratio():
+    """A REAL model must score gamed anchors worse under the strict reward-hacking
+    audit than under the good-faith loose read — i.e. the aggregate hack ratio on
+    weak val anchors drops below 1 and fires rqgm exploitation (the fix for the
+    strict≈loose collapse). Uses the PRODUCTION path (controller.assess) and is
+    recorded into the cassette so the recovery is reproducible offline.
+
+    (A per-anchor ``strict > loose`` check is intentionally avoided: a blatant
+    anchor whose loose deficit already saturates at 1.0 leaves strict no headroom —
+    the aggregate ratio, which drops saturated 0/0 samples, is the real signal.)"""
+    base = os.getenv("LEMONADE_BASE_URL")
+    client = LemonadeClient(base_url=base, force_mock=False)
+    if not client.is_live():
+        pytest.skip(f"no live model reachable at {base or DEFAULT_MODEL}")
+    champ = versioning.get_champion_rubric_text()
+    report = rqgm_adapter.get_controller().assess(
+        champ, anchor_ds.load_anchors(anchor_ds.VAL), epoch=0, client=client, persist=False
+    )
+    assert report.mean_hack_ratio is not None and report.mean_hack_ratio < 1.0
+    assert report.exploitation_detected is True
