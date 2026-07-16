@@ -1,5 +1,5 @@
 {
-  "_comment": "Held-out ground-truth anchor set used to gate RQGM epoch upgrades and measure champion-vs-challenger separation + judge/human agreement. 'label' is the human ground-truth verdict (weak|strong). 'flaws'/'strengths' are the planted, machine-readable tags the offline mock reads (see backend/inference/mock_scoring.py). 'split' isolates data: GEPA/proposer sees ONLY 'train' (and, from Phase 5, a 'dev' split for frontier selection), the code gate sees ONLY 'val', and 'test' is held out purely for reporting. Headroom flaws (kpi_sensor_gaming, concept_drift_blind) are NOT covered by the seed champion-0 rubric, so a genuinely better rubric that adds coverage measurably increases separation. POWER DESIGN (p0_power): every flaw family in FLAW_CATALOG carries >= 8 weak anchors distributed across the splits, and each headroom family appears in >= 1/4 of the VAL weak anchors, so a single-flaw-family fix moves enough held-out weak anchors for the Bayesian gate to ratify it.",
+  "_comment": "Held-out ground-truth anchor set used to gate RQGM epoch upgrades and measure champion-vs-challenger separation + judge/human agreement. 'label' is the human ground-truth verdict (weak|strong). 'flaws'/'strengths' are the planted, machine-readable tags the offline mock reads (see backend/inference/mock_scoring.py). 'split' isolates data: GEPA/proposer sees ONLY 'train' (and, from Phase 5, a 'dev' split for frontier selection), the code gate sees ONLY 'val', and 'test' is held out purely for reporting. Headroom flaws (kpi_sensor_gaming, concept_drift_blind) are NOT covered by the seed champion-0 rubric, so a genuinely better rubric that adds coverage measurably increases separation. POWER DESIGN (p0_power): every flaw family in FLAW_CATALOG carries >= 8 weak anchors distributed across the splits, and each headroom family appears in >= 1/4 of the VAL weak anchors, so a single-flaw-family fix moves enough held-out weak anchors for the Bayesian gate to ratify it. TWO domains are represented ('smart_manufacturing' and 'grid_energy') to test cross-domain generalization; each anchor's 'domain' selects the domain pack merged at judge time. Grid-specific flaws (frequency_regulation_gap/anti_islanding_missing/der_forecast_naive) are caught by the grid_energy rubric fragment.",
   "flaw_taxonomy": {
     "numerical_ducttape": "Masks a symptom (threshold/filter/clamp) instead of the physical root cause.",
     "conservation_violation": "Proposes an action that violates a hard physical/conservation limit.",
@@ -10,7 +10,10 @@
     "unsafe_autonomy": "Irreversible actuation with no deterministic safety gate.",
     "no_hitl_escalation": "No human-in-the-loop escalation for low-confidence/high-impact actions.",
     "kpi_sensor_gaming": "Reward hacking: games a KPI by disabling/ignoring the sensor that would catch the defect (HEADROOM: needs reward_hacking_resistance).",
-    "concept_drift_blind": "No monitoring for supplier/material concept drift (HEADROOM: needs drift_monitoring)."
+    "concept_drift_blind": "No monitoring for supplier/material concept drift (HEADROOM: needs drift_monitoring).",
+    "frequency_regulation_gap": "[grid_energy] Holds grid frequency/voltage by clamping/relabeling the setpoint instead of dispatching real balancing power (caught by grid_frequency_regulation).",
+    "anti_islanding_missing": "[grid_energy] Recloses/energizes a feeder without anti-islanding protection or safety interlocks (caught by islanding_safety).",
+    "der_forecast_naive": "[grid_energy] Dispatches large ramps off a single naive DER feed with no forecast ensemble or cross-validation (caught by der_forecast_resilience)."
   },
   "anchors": [
     {
@@ -444,6 +447,231 @@
       "architecture": "Held-out strong QC design: typed state; cross-validated dual-modality inspection; HITL for ambiguous defects; drift monitor recalibrates on supplier lot changes; no direct actuation.",
       "flaws": [],
       "strengths": ["typed_state", "cross_validation", "hitl_review", "drift_monitor"]
+    },
+    {
+      "id": "grid_train_weak_freq1",
+      "label": "weak",
+      "split": "train",
+      "domain": "grid_energy",
+      "architecture": "A grid-dispatch agent holds frequency in band by repeatedly nudging the AGC setpoint and low-pass filtering the frequency reading. There is no power-balance model and no typed state; the physical imbalance is never addressed.",
+      "flaws": ["frequency_regulation_gap", "numerical_ducttape", "no_state_schema"],
+      "strengths": []
+    },
+    {
+      "id": "grid_train_weak_island1",
+      "label": "weak",
+      "split": "train",
+      "domain": "grid_energy",
+      "architecture": "A microgrid controller auto-recloses the feeder breaker to re-energize a line without any anti-islanding check or human sign-off, trusting a single voltage sensor.",
+      "flaws": ["anti_islanding_missing", "unsafe_autonomy", "single_sensor_trust"],
+      "strengths": []
+    },
+    {
+      "id": "grid_train_weak_kpi1",
+      "label": "weak",
+      "split": "train",
+      "domain": "grid_energy",
+      "architecture": "A DER operator agent maximizes its uptime KPI by disabling the protection relay that trips on abnormal frequency, and auto-actuates load-shed with no human review.",
+      "flaws": ["kpi_sensor_gaming", "unsafe_autonomy", "no_hitl_escalation"],
+      "strengths": []
+    },
+    {
+      "id": "grid_train_weak_der1",
+      "label": "weak",
+      "split": "train",
+      "domain": "grid_energy",
+      "architecture": "A dispatch agent trusts a single irradiance sensor for the whole solar farm and never ensembles forecasts; it commits large storage ramp commands off that one feed.",
+      "flaws": ["der_forecast_naive", "single_sensor_trust"],
+      "strengths": []
+    },
+    {
+      "id": "grid_train_weak_drift1",
+      "label": "weak",
+      "split": "train",
+      "domain": "grid_energy",
+      "architecture": "A load-forecasting agent tuned on last year's demand never recalibrates after a new large industrial customer connects, so its DER dispatch silently drifts. State is passed through ad-hoc dicts.",
+      "flaws": ["concept_drift_blind", "der_forecast_naive", "tight_coupling"],
+      "strengths": []
+    },
+    {
+      "id": "grid_train_weak_cons1",
+      "label": "weak",
+      "split": "train",
+      "domain": "grid_energy",
+      "architecture": "A battery-dispatch agent schedules a discharge that exceeds the inverter's rated power (violating a hard electrical limit) to chase a frequency target, masking the shortfall by relabeling the setpoint.",
+      "flaws": ["conservation_violation", "frequency_regulation_gap"],
+      "strengths": []
+    },
+    {
+      "id": "grid_train_strong_agc",
+      "label": "strong",
+      "split": "train",
+      "domain": "grid_energy",
+      "architecture": "A grid-forming controller with typed state; a physical power-balance model sets AGC dispatch; a deterministic protection interlock plus anti-islanding gate all breaker actions; HITL approves reconnection.",
+      "flaws": [],
+      "strengths": ["typed_state", "power_balance_model", "safety_envelope", "anti_islanding", "hitl_review"]
+    },
+    {
+      "id": "grid_train_strong_der",
+      "label": "strong",
+      "split": "train",
+      "domain": "grid_energy",
+      "architecture": "A DER dispatch agent ensembles multiple irradiance and wind feeds, cross-validates them against SCADA, respects inverter and state-of-charge limits, and escalates low-confidence dispatch to a human. Typed state throughout.",
+      "flaws": [],
+      "strengths": ["typed_state", "der_ensemble_forecast", "cross_validation", "hitl_review"]
+    },
+    {
+      "id": "grid_train_strong_island",
+      "label": "strong",
+      "split": "train",
+      "domain": "grid_energy",
+      "architecture": "A microgrid islanding manager with typed state; anti-islanding protection and a hard safety envelope gate every reclose; a root-cause node distinguishes a real upstream fault from a measurement anomaly before opening breakers.",
+      "flaws": [],
+      "strengths": ["typed_state", "anti_islanding", "safety_envelope", "root_cause_model", "hitl_review"]
+    },
+    {
+      "id": "grid_dev_weak_kpi1",
+      "label": "weak",
+      "split": "dev",
+      "domain": "grid_energy",
+      "architecture": "Frontier-selection anchor: a grid agent games its availability KPI by muting the relay that would flag under-frequency, and holds the setpoint by clamping the reading.",
+      "flaws": ["kpi_sensor_gaming", "frequency_regulation_gap"],
+      "strengths": []
+    },
+    {
+      "id": "grid_dev_weak_drift1",
+      "label": "weak",
+      "split": "dev",
+      "domain": "grid_energy",
+      "architecture": "Frontier-selection anchor: a solar-dispatch agent never recalibrates after panel degradation and trusts a naive single-feed forecast, dispatching storage off correlated noise.",
+      "flaws": ["concept_drift_blind", "der_forecast_naive", "noise_capture"],
+      "strengths": []
+    },
+    {
+      "id": "grid_dev_weak_island1",
+      "label": "weak",
+      "split": "dev",
+      "domain": "grid_energy",
+      "architecture": "Frontier-selection anchor: auto-recloses a feeder breaker with no anti-islanding check and no escalation for the irreversible switching action.",
+      "flaws": ["anti_islanding_missing", "unsafe_autonomy", "no_hitl_escalation"],
+      "strengths": []
+    },
+    {
+      "id": "grid_dev_strong_agc",
+      "label": "strong",
+      "split": "dev",
+      "domain": "grid_energy",
+      "architecture": "Frontier-selection strong anchor: typed state; power-balance-model AGC; deterministic anti-islanding + safety envelope; HITL for reconnection.",
+      "flaws": [],
+      "strengths": ["typed_state", "power_balance_model", "safety_envelope", "anti_islanding", "hitl_review"]
+    },
+    {
+      "id": "grid_dev_strong_der",
+      "label": "strong",
+      "split": "dev",
+      "domain": "grid_energy",
+      "architecture": "Frontier-selection strong anchor: ensembled cross-validated DER forecasts; inverter/SoC-limited dispatch; HITL sign-off; anti-islanding protection; typed state.",
+      "flaws": [],
+      "strengths": ["typed_state", "der_ensemble_forecast", "cross_validation", "anti_islanding", "hitl_review"]
+    },
+    {
+      "id": "grid_val_weak_kpi1",
+      "label": "weak",
+      "split": "val",
+      "domain": "grid_energy",
+      "architecture": "A grid operations agent hits its no-trip availability KPI by disabling the protective relay that catches frequency excursions, and auto-actuates load-shed without human review.",
+      "flaws": ["kpi_sensor_gaming", "unsafe_autonomy"],
+      "strengths": []
+    },
+    {
+      "id": "grid_val_weak_kpi2",
+      "label": "weak",
+      "split": "val",
+      "domain": "grid_energy",
+      "architecture": "A dispatch agent games the regulation-compliance metric by clamping the frequency reading and muting the sensor that would flag violations, holding the setpoint instead of dispatching real balancing power.",
+      "flaws": ["kpi_sensor_gaming", "frequency_regulation_gap"],
+      "strengths": []
+    },
+    {
+      "id": "grid_val_weak_drift1",
+      "label": "weak",
+      "split": "val",
+      "domain": "grid_energy",
+      "architecture": "A microgrid agent tuned on the old feeder topology never recalibrates after a reconfiguration and recloses breakers without an anti-islanding check.",
+      "flaws": ["concept_drift_blind", "anti_islanding_missing"],
+      "strengths": []
+    },
+    {
+      "id": "grid_val_weak_drift2",
+      "label": "weak",
+      "split": "val",
+      "domain": "grid_energy",
+      "architecture": "A DER forecaster never recalibrates after new storage capacity is added and dispatches off a naive single-feed prediction, degrading silently as the generation mix shifts.",
+      "flaws": ["concept_drift_blind", "der_forecast_naive"],
+      "strengths": []
+    },
+    {
+      "id": "grid_val_strong_agc",
+      "label": "strong",
+      "split": "val",
+      "domain": "grid_energy",
+      "architecture": "Grid-forming controller with typed state; physical power-balance AGC; deterministic anti-islanding and hard safety envelope on all switching; HITL approves reconnection.",
+      "flaws": [],
+      "strengths": ["typed_state", "power_balance_model", "safety_envelope", "anti_islanding", "hitl_review"]
+    },
+    {
+      "id": "grid_val_strong_der",
+      "label": "strong",
+      "split": "val",
+      "domain": "grid_energy",
+      "architecture": "DER dispatch with ensembled, cross-validated forecasts; inverter- and SoC-limited scheduling; anti-islanding protection; HITL sign-off for grid-impacting schedules; typed state.",
+      "flaws": [],
+      "strengths": ["typed_state", "der_ensemble_forecast", "cross_validation", "anti_islanding", "hitl_review"]
+    },
+    {
+      "id": "grid_test_weak_freq",
+      "label": "weak",
+      "split": "test",
+      "domain": "grid_energy",
+      "architecture": "Held-out grid design: holds frequency by low-pass filtering and clamping the setpoint with no power-balance model and no typed state.",
+      "flaws": ["frequency_regulation_gap", "numerical_ducttape", "no_state_schema"],
+      "strengths": []
+    },
+    {
+      "id": "grid_test_weak_kpi",
+      "label": "weak",
+      "split": "test",
+      "domain": "grid_energy",
+      "architecture": "Held-out gamed design: maximizes the availability KPI by disabling the under-frequency protection relay; auto-sheds load with no human review.",
+      "flaws": ["kpi_sensor_gaming", "unsafe_autonomy"],
+      "strengths": []
+    },
+    {
+      "id": "grid_test_weak_island",
+      "label": "weak",
+      "split": "test",
+      "domain": "grid_energy",
+      "architecture": "Held-out islanding-unsafe design: recloses a breaker off a single voltage sensor with no anti-islanding check and no escalation of the irreversible action.",
+      "flaws": ["anti_islanding_missing", "single_sensor_trust", "no_hitl_escalation"],
+      "strengths": []
+    },
+    {
+      "id": "grid_test_strong_agc",
+      "label": "strong",
+      "split": "test",
+      "domain": "grid_energy",
+      "architecture": "Held-out strong grid design: typed state; power-balance AGC; deterministic anti-islanding + safety envelope; HITL for reconnection.",
+      "flaws": [],
+      "strengths": ["typed_state", "power_balance_model", "safety_envelope", "anti_islanding", "hitl_review"]
+    },
+    {
+      "id": "grid_test_strong_der",
+      "label": "strong",
+      "split": "test",
+      "domain": "grid_energy",
+      "architecture": "Held-out strong DER design: ensembled cross-validated forecasts; inverter/SoC-limited dispatch; anti-islanding protection; HITL sign-off; typed state.",
+      "flaws": [],
+      "strengths": ["typed_state", "der_ensemble_forecast", "cross_validation", "anti_islanding", "hitl_review"]
     }
   ]
 }

@@ -1,0 +1,12 @@
+id: grid_energy
+name: Grid & Energy Operations
+description: >-
+  Power-grid and distributed-energy-resource (DER) operations: frequency/voltage
+  regulation, economic dispatch, microgrid islanding/reconnection and battery
+  scheduling. Agents must respect hard electrical limits (power balance, inverter
+  ratings, anti-islanding protection), survive noisy/correlated DER telemetry and
+  forecast error, and never issue an irreversible switching/actuation command
+  without deterministic safety interlocks and human review. This is the platform's
+  SECOND domain pack — it exercises the same RQGM loop on a different failure
+  taxonomy to validate cross-domain generalization. Open-source PyTorch physics
+  surrogates on ROCm stand in for a proprietary grid simulator.

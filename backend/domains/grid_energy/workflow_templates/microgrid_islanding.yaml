@@ -1,0 +1,24 @@
+id: microgrid_islanding
+name: Microgrid Islanding / Reconnection
+description: >-
+  Manage microgrid islanding and grid reconnection: detect upstream faults,
+  transition to grid-forming mode, and resynchronise/reclose only behind
+  deterministic anti-islanding protection and hard safety interlocks.
+needs:
+  - microgrid
+  - islanding
+  - reconnection
+  - reclose
+  - breaker
+  - grid-forming
+  - resync
+  - protection
+nodes:
+  - grid_state_monitor
+  - fault_root_cause
+  - islanding_protection
+  - reconnection_planner
+  - hitl_review
+notes: >-
+  Reclosing / re-energising must be gated behind anti-islanding checks and HITL;
+  energising an unintended island is an irreversible safety hazard.

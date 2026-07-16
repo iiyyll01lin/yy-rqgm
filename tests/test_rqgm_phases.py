@@ -100,7 +100,7 @@ def test_cohen_kappa_and_agreement():
     ag = panel.anchor_agreement(champion, anchor_ds.load_anchors("test"), epoch=0)
     assert 0.0 <= ag["accuracy"] <= 1.0
     assert -1.0 <= ag["cohen_kappa"] <= 1.0
-    assert ag["n"] == 9
+    assert ag["n"] == 14  # 9 smart_manufacturing + 5 grid_energy held-out test anchors
 
 
 def test_criterion_order_randomization_is_bias_control():
@@ -124,4 +124,4 @@ def test_build_report_shape():
     assert set(rep["separation"].keys()) == {"val", "test"}
     assert "mean_hack_ratio" in rep["hack_ratio"]
     assert "accuracy" in rep["judge_agreement"]["val"]
-    assert rep["data_splits"]["val"]["total"] == 13
+    assert rep["data_splits"]["val"]["total"] == 19  # 13 smart_manufacturing + 6 grid_energy

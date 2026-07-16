@@ -229,12 +229,12 @@ yy-rqgm/
 │   ├── inference/             #   Lemonade client + deterministic rubric-aware mock_scoring
 │   ├── memory/                #   Qdrant store（in-memory fallback + hybrid search）
 │   ├── export/                #   TCO 提案 + 可跑 deploy 模板
-│   ├── domains/               #   domain pack plugin（smart_manufacturing/）
+│   ├── domains/               #   domain pack plugin（smart_manufacturing/ + grid_energy/）
 │   └── app/                   #   main.py + REST API
 ├── frontend/                  # Next.js 16 4-step wizard（lib/api.ts, lib/vram.ts, …）
 ├── infra/                     # docker-compose.yml + docker-compose.rocm.yml
 ├── scripts/                   # dev.sh（起服務）、demo.sh（走查）、quantize_quark.py
-├── data/                      # anchor/（48 labeled: train/dev/val/test）、frontier/、epoch_state.json、rqgm_state.json
+├── data/                      # anchor/（73 labeled, 2 domains: train/dev/val/test）、frontier/、epoch_state.json、rqgm_state.json
 └── tests/                     # 104 tests（102 passed + 2 @live skipped；gatekeeper 物理數學 + RQGM gate/frontier/erasure 必測）
 ```
 

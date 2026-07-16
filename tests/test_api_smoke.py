@@ -35,7 +35,7 @@ def test_admin_report_endpoint(client):
     assert "mean_hack_ratio" in r["hack_ratio"]
     assert "accuracy" in r["judge_agreement"]["val"]
     assert "cohen_kappa" in r["judge_agreement"]["test"]
-    assert r["data_splits"]["test"]["total"] == 9
+    assert r["data_splits"]["test"]["total"] == 14  # 9 smart_manufacturing + 5 grid_energy
     assert r["rqgm_backend"] in {"rqgm", "local-fallback"}
 
 

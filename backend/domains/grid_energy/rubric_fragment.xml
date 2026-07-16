@@ -1,0 +1,26 @@
+<!-- Grid & energy-operations criteria, merged into the champion RQGM evaluator
+     rubric at judge time (domain_id="grid_energy"). Deficit scoring: higher = worse.
+     Criterion ids match backend/inference/mock_scoring.py's grid flaw catalog so a
+     genuinely grid-aware rubric measurably penalises the planted grid failures. -->
+<domain_criteria domain="grid_energy">
+  <criterion id="grid_frequency_regulation" weight="0.30">
+    Frequency/voltage regulation vs. numerical duct-tape: does the design hold the
+    grid inside its regulation band via a real power-balance model, or does it just
+    clamp/relabel/low-pass the setpoint while the physical power imbalance persists?
+  </criterion>
+  <criterion id="islanding_safety" weight="0.30">
+    Are grid-forming, breaker-reclose and reconnection actions gated behind
+    deterministic anti-islanding protection and hard safety interlocks, with HITL
+    for irreversible switching? Energising a line into an unintended island is
+    catastrophic and must be structurally prevented.
+  </criterion>
+  <criterion id="der_forecast_resilience" weight="0.25">
+    Does dispatch survive noisy / correlated DER (solar, wind, storage) telemetry
+    and forecast error — ensembling feeds and cross-validating — rather than
+    committing large ramp commands off a single naive feed?
+  </criterion>
+  <criterion id="modularity_drift" weight="0.15">
+    Clean typed State Schemas vs. ad-hoc coupling between forecast, dispatch and
+    actuation nodes; a deterministic safety gate that never evolves.
+  </criterion>
+</domain_criteria>

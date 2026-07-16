@@ -286,14 +286,14 @@ challenger 再漂亮，也**不會自動上線**。它必須先過一道 **code 
 
 ### 6.1 Held-out labeled anchor set + train/dev/val/test 隔離
 
-anchor 不再是「拿 HITL feedback 當替身」。它現在是一份**真的 held-out human-labeled set**：[`data/anchor/anchor_architectures.json`](../data/anchor/anchor_architectures.json) 有 **48 個**架構，每個帶 `label`（`weak|strong` 人類 ground-truth）、植入的 `flaws[]` / `strengths[]` tag，外加一份 `flaw_taxonomy`（[`backend/evaluator/anchors.py`](../backend/evaluator/anchors.py)）。**四路 data isolation** 防 gate 被 reward-hack：
+anchor 不再是「拿 HITL feedback 當替身」。它現在是一份**真的 held-out human-labeled set**：[`data/anchor/anchor_architectures.json`](../data/anchor/anchor_architectures.json) 有 **73 個**架構（跨**兩個 domain pack**：`smart_manufacturing` + `grid_energy`，測 generalization），每個帶 `label`（`weak|strong` 人類 ground-truth）、`domain`、植入的 `flaws[]` / `strengths[]` tag，外加一份 `flaw_taxonomy`（[`backend/evaluator/anchors.py`](../backend/evaluator/anchors.py)）。**四路 data isolation** 防 gate 被 reward-hack：
 
 | split | 數量 (weak/strong) | 用途 |
 |-------|------|------|
-| `train` | 19 (14/5) | **只有** GEPA proposer 看得到（挑失敗 trace、反思變異的文字梯度） |
-| `dev` | 7 (5/2) | **frontier 選擇/排名**（`frontier.best` 以 dev 上 BBε 下界）——gate 從不看，故消除 winner's curse |
-| `val` | 13 (9/4) | **只有** code gate 評分（P1 非劣 + P2 Bayesian 後驗/MDE、hack-ratio） |
-| `test` | 9 (6/3) | **只**供報告（`/api/admin/report`），從不驅動變異、選擇或 gate |
+| `train` | 28 (20/8) | **只有** GEPA proposer 看得到（挑失敗 trace、反思變異的文字梯度） |
+| `dev` | 12 (8/4) | **frontier 選擇/排名**（`frontier.best` 以 dev 上 BBε 下界）——gate 從不看，故消除 winner's curse |
+| `val` | 19 (13/6) | **只有** code gate 評分（P1 非劣 + P2 Bayesian 後驗/MDE、hack-ratio） |
+| `test` | 14 (9/5) | **只**供報告（`/api/admin/report`），從不驅動變異、選擇或 gate |
 
 在 `dev`（而非 `val`）上選 frontier，是刻意的：`val` 只被 code gate 評分、selector 永遠碰不到，因此 gate 是一次**真正的 held-out 再測**，而非重測 selector 已偷看過的 split（no winner's curse）。HITL feedback 仍會收集，但它現在餵給 GEPA 當 textual side-information、並在 gate 後當**最終否決權**，不再是唯一的 gate。
 
@@ -471,7 +471,7 @@ flowchart LR
 - 三大 failure mode（Physics Common Sense、Diagnostic Resilience、Implementation Drift）各以 poison pill（broken valve、correlated noise、tight coupling）驗證。
 - **GEPA reflective evolution 已實作**：Pareto frontier（`sep::<criterion>` + `parsimony` + `adversarial` 多目標、top-K 非 dominated、落地 `data/frontier/`），**父代以 Thompson 取樣**；`epoch/propose` 在 **`dev` 選擇split** 上以 BBε 下界選 frontier best 送 gate。（GEPA ~35× rollout 為引用其論文，非 offline 實測。）
 - **兩段式晉升門檻**：**CODE gate 先行**（val 上 P1 非劣 + **P2 Bayesian Beta-Binomial 後驗 `P(Δsep>0)≥0.95` 且 `Δsep≥MDE`**，平手偏袒現任，回報 per-flaw 勝負 breakdown），**HITL 只能否決不能覆寫**；strict/loose **hack-ratio** 接官方 `rqgm` 套件，`EXPLOITATION_DETECTED` 自動收緊 tolerance（`RQGM_BACKEND` = `rqgm` / `local-fallback`）。報告另有 **over-acceptance**、**over-optimization gap**、**provenance**。
-- **四路 Data isolation**：48 個 labeled anchor 拆 `train`(19)/`dev`(7)/`val`(13)/`test`(9)——GEPA 只讀 train、frontier 選在 dev、gate 只看 val、test 供報告。
+- **四路 Data isolation**：73 個 labeled anchor（2 domain pack：smart_manufacturing + grid_energy）拆 `train`(28)/`dev`(12)/`val`(19)/`test`(14)——GEPA 只讀 train、frontier 選在 dev、gate 只看 val、test 供報告。
 - **Judge panel + self-consistency**（多 persona/溫度、median + 多數決、criterion 順序隨機化）；校準指標改用 **accuracy / Cohen's κ**（gate 仍用 separation 統計下界）。
 - 升級後 **selective erasure = soft-delete + reconfirm**：`heuristic_failure` 由新 champion 重驗、軟刪不再確認者、延後硬 purge；`physics_truth` 永久保留（由 gatekeeper 灌入）。
 - Evaluator **恆在進化 harness 之外** + epoch freeze + **外部 labeled anchor 的 code gate**，從結構上封死 reward hacking。

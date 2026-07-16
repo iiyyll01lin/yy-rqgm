@@ -1,0 +1,26 @@
+id: der_dispatch
+name: DER Dispatch & Battery Scheduling
+description: >-
+  Economically dispatch distributed energy resources (solar, wind, storage)
+  against ensembled, cross-validated forecasts, respecting inverter ratings and
+  state-of-charge limits, with human sign-off for grid-impacting schedules.
+needs:
+  - der
+  - dispatch
+  - battery
+  - storage
+  - solar
+  - wind
+  - forecast
+  - economic
+  - scheduling
+  - state of charge
+nodes:
+  - forecast_ensemble
+  - telemetry_cross_validate
+  - dispatch_optimizer
+  - safety_envelope_check
+  - hitl_review
+notes: >-
+  Dispatch must survive correlated DER telemetry noise and forecast error; large
+  ramp commands off a single naive feed are a red flag.

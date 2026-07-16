@@ -131,7 +131,7 @@ flowchart TD
 | **Numerical Duct-Tape** | 反面教材：用調參/濾波/clamp 把症狀壓下去，卻沒解決物理 root cause。Evaluator 的頭號打擊目標。 |
 | **Epoch** | 進化的時間單位。epoch 內 evaluator 凍結（utility stationary）；epoch 邊界才允許升級與 selective erasure。 |
 | **Selective Erasure** | epoch 升級時，對「其效用值依賴被替換 evaluator」的 `heuristic_failure` 記錄做 **soft-delete + 新 champion reconfirm**（軟刪不再確認者、延後硬 purge），保留仍有效者；`physics_truth` 永不動。非全量清空。 |
-| **Ground-Truth Anchor** | 升級 gating 的裁判。現為一份**真的 held-out human-labeled set**（48 個標註架構，四路拆 `train`/`dev`/`val`/`test`）：GEPA 只讀 `train`、frontier 選在 `dev`、code gate 只在 `val` 上判 P1/P2、`test` 純報告。HITL feedback 另餵給 GEPA 當 side-information，並在 gate 後保留否決權。 |
+| **Ground-Truth Anchor** | 升級 gating 的裁判。現為一份**真的 held-out human-labeled set**（73 個標註架構，跨 2 個 domain pack，四路拆 `train`/`dev`/`val`/`test`）：GEPA 只讀 `train`、frontier 選在 `dev`、code gate 只在 `val` 上判 P1/P2、`test` 純報告。HITL feedback 另餵給 GEPA 當 side-information，並在 gate 後保留否決權。 |
 | **Hot / Cold Path** | Hot = 同步、使用者可見、便宜；Cold = 非同步、離線、昂貴（進化）。 |
 | **HITL** | *Human-in-the-Loop*：LangGraph `interrupt()` + checkpointer 實作的人工檢查點；本平台用它同時當 anchor 與 epoch 升級的核准閘。 |
 | **KV Cache** | 自回歸 decode 時快取的 keys/values；`KV_per_token = 2 × n_layers × n_kv_heads × head_dim × bytes_kv`。population search 時它會爆炸（見 A2）。 |

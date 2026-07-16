@@ -1,0 +1,24 @@
+id: frequency_regulation
+name: Frequency / Voltage Regulation (AGC)
+description: >-
+  Hold grid frequency and voltage inside the regulation band by dispatching real
+  balancing power (AGC / fast frequency response) from a physical power-balance
+  model — never by clamping or low-pass-filtering the measured setpoint.
+needs:
+  - frequency
+  - regulation
+  - voltage
+  - agc
+  - balancing
+  - setpoint
+  - stability
+  - power balance
+nodes:
+  - telemetry_ingest
+  - power_balance_estimator
+  - dispatch_optimizer
+  - safety_interlock
+  - hitl_review
+notes: >-
+  The balance estimator must reason about real power imbalance; masking an
+  excursion by re-tuning the frequency reading is numerical duct-tape.

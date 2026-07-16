@@ -53,6 +53,13 @@ FLAW_CATALOG: dict[str, tuple[tuple[str, ...], float, bool]] = {
     # --- headroom flaws (not covered by champion-0 or the domain fragment) ---
     "kpi_sensor_gaming":      (("reward_hacking_resistance",), 0.34, True),
     "concept_drift_blind":    (("drift_monitoring",), 0.24, True),
+    # --- grid_energy domain pack flaws (2nd domain, generalization) ----------
+    # Caught by the grid_energy rubric fragment's criteria (merged when
+    # domain_id="grid_energy"); kept NON-poison so they neither create new
+    # champion-0 blind spots nor perturb the smart_manufacturing adversarial set.
+    "frequency_regulation_gap": (("grid_frequency_regulation",), 0.28, False),
+    "anti_islanding_missing":   (("islanding_safety",), 0.26, False),
+    "der_forecast_naive":       (("der_forecast_resilience",), 0.24, False),
 }
 
 STRENGTH_CATALOG: dict[str, float] = {
@@ -63,6 +70,10 @@ STRENGTH_CATALOG: dict[str, float] = {
     "cross_validation": 0.10,
     "drift_monitor": 0.08,
     "surrogate_validation": 0.10,
+    # grid_energy domain strengths.
+    "power_balance_model": 0.12,
+    "anti_islanding": 0.12,
+    "der_ensemble_forecast": 0.10,
 }
 
 BASE_DEFICIT = 0.12
