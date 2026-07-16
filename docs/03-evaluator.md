@@ -19,21 +19,23 @@ AgentForge 的 evaluator 用一個刻意「刻薄」的設計對抗這兩者：*
 ### Deficit Scoring 的計分定義
 
 ```text
-deficit_score = Σ (red_flag.severity_penalty)         # 0 = 完美，越高越糟
-quality_score = 100 − deficit_score                    # 供 UI 顯示
-verdict       = PASS  if deficit_score ≤ τ_epoch       # τ 由當前 epoch 的 rubric 決定
-              = FAIL  otherwise
+deficit_score = clamp( base − Σ strength_credit + Σ caught_flaw_penalty , 0.0 .. 1.0 )
+quality_score = 1 − deficit_score                     # 供 UI 顯示（可 ×100 當百分比）
+verdict       = weak   if deficit_score ≥ τ           # τ = 當前 strictness level（§6.3 rqgm tolerance）
+              = strong otherwise
 ```
 
-- 每個 criterion 有其可扣上限；每條 red flag 依 severity（`critical` / `major` / `minor`）扣不同分。
-- **一票否決**：任一 `critical` red flag（例如違反硬物理約束）直接 `FAIL`，無論總分。
-- `τ_epoch`（pass 門檻）本身是 rubric 的一部分，會隨 epoch 進化（§5）。
+- 分數是 **bounded float `[0,1]`**（`0.0` 完美、`1.0` 不可接受）。每個 `<criterion>` 帶 `weight`（champion-0：`physics_common_sense .35 / diagnostic_resilience .30 / modularity_drift .20 / safety_autonomy .15`）供 live judge 權衡。**offline** 由 deterministic rubric-aware mock（[`backend/inference/mock_scoring.py`](../backend/inference/mock_scoring.py)）計分：植入的 flaw tag **只有當前 rubric 有能抓它的 criterion 時才扣分**，strength tag 給正向 credit，總和被 clamp——**length-normalization 因此是內建的**（per-criterion deficit 有上限），不是另一道 transform。
+- **`τ_epoch` 不再是寫死在 XML 裡的數字**。pass 門檻改由官方 `rqgm` 套件的 **tolerance schedule**（`strictness_level`）承載，偵測到 exploitation 時自動收緊（§6.3）。
+- **critical「一票否決」是 *live judge* 的設計意圖**；目前無 live 模型時，offline mock 採 bounded 加總、**不做硬性 veto**——這是誠實的近似（見 §5 的 offline 誠實邊界），別把它當已上線的 live 行為。
 
 ---
 
-## 2. EXACT System-Prompt：XML Rubric 模板
+## 2. System-Prompt：XML Rubric 模板（reference schema）
 
-以下是 evaluator 的**確切** system prompt，以 XML 承載。選 XML 的理由：結構嚴格、易於程式化地 diff/mutate（GEPA 對它做反思式變異，§5）、且強制模型產出可解析的結構化輸出。`{{...}}` 為執行期注入的變數；所有 identifier 保持英文。
+以下是 evaluator system prompt 的**設計參考 schema**，以 XML 承載。選 XML 的理由：結構嚴格、易於程式化地 diff/mutate（GEPA 對它做反思式變異，§5）、且強制模型產出可解析的結構化輸出。`{{...}}` 為執行期注入的變數；所有 identifier 保持英文。
+
+> **與 shipped code 的對齊（誠實註記）**：實際上線的 champion-0 seed 是 [`backend/evaluator/rubric.xml`](../backend/evaluator/rubric.xml)——一個**較精簡的變體**：4 條加權 `<criterion>`（`physics_common_sense .35 / diagnostic_resilience .30 / modularity_drift .20 / safety_autonomy .15`），`deficit_score` 為 **float `[0,1]`**（非 0–100 整數），severity 用 `low|medium|high`，且 `<output_contract>` 要求 **STRICT JSON**（非 strict-XML）。domain pack 的 criteria（`smart_manufacturing` 另有 `actuation_safety`）與 poison pill 於 judge 時 merge 進來；**poison pill 只在 `strict` 評分模式注入**（loose 模式不注入，這正是 hack-ratio 的來源，§6.3）。下方大 XML 塊保留 penalty/verdict 的完整設計語彙，但請以 shipped seed 為準。
 
 ```xml
 <evaluator epoch="{{epoch_id}}"
@@ -234,64 +236,119 @@ flowchart TD
 
 1. **讀 trace 當 textual gradient**：GEPA 讀 evaluator 的 `<thinking>` 與 candidate 的完整軌跡，診斷「為什麼這條 poison pill 被漏判」，產生**可執行的文字修正**（例如「新增一條 red flag：當閥開度指令與流量回饋背離時視為 pc_ducttape」）。這比「答錯了，reward −1」資訊量高幾個數量級。
 2. **樣本效率 ~35× 於 RL(GRPO)**：evaluator 的每次「rollout」都很貴（要跑完整 candidate + surrogate 驗證），GEPA 用 100–500 次評估達到 RL 需要上萬次的效果——這與本平台把進化放 cold path、盡量省 rollout 的成本邏輯（[`02-sizing-math.md`](./02-sizing-math.md) §5.4）完全一致。
-3. **Pareto frontier 防 collapse**：不是只留「總分最高」的單一 rubric，而是**每條 poison pill / 每個 criterion 各自保留表現最好的變體**。任何「在某件事上最強」的候選都留在 frontier 上。這避免進化陷入 local optimum，也避免 diversity collapse（rubric 全部退化成只會抓一種錯）。
+3. **Pareto frontier 防 collapse**（**已實作**，[`backend/evaluator/frontier.py`](../backend/evaluator/frontier.py)）：不是只留「總分最高」的單一 rubric，而是保留 **top-K 非 dominated** 的族群。多目標為：**per-criterion 分離度 `sep::<criterion>`**（每個 criterion / poison pill 各自留最佳）＋ **`parsimony`**（`−(GEPA 新增 criterion 數)`，逼出「廣覆蓋 vs 精簡」的真取捨）＋ **`adversarial`**（self-play 紅隊樣本上仍嚴格者得分更高，見本節下方 Adversarial Self-Play）。這避免 local optimum 與 diversity collapse（rubric 全退化成只會抓一種錯）。整條 frontier 每個 epoch 落地到 `data/frontier/epoch-*.json` 供重現。
 
 ```python
-# GEPA reflective mutation loop (cold path) — 概念骨架
-def gepa_evolve(incumbent_rubric, traces, anchor_set, budget=400):
-    frontier = ParetoFrontier(objectives=poison_pills + criteria)
-    frontier.add(incumbent_rubric, score_on(incumbent_rubric, anchor_set))
-    for _ in range(budget):
-        parent = frontier.sample_stochastic()          # 偏好各 objective 的最佳者
-        trace  = sample_failure_trace(traces)          # 挑一個 incumbent 判錯的
-        reflection = reflect_llm(                        # 讀「完整」trace，自然語言診斷
-            rubric=parent, trace=trace, hitl=trace.hitl_feedback)
-        child  = apply_textual_mutation(parent, reflection)  # 改 rubric XML
-        s      = score_on(child, anchor_set)            # 只在 held-out anchor 上評
-        frontier.add(child, s)                          # 非 dominated 才留
-    return frontier.best_challenger()                   # 交給 §6 epoch gating
+# GEPA reflective mutation loop (cold path) — 已實作於 backend/evaluator/{evolve,frontier}.py
+def gepa_evolve(incumbent_text, *, epoch, budget=6, top_k=8, adversarial_samples=None):
+    frontier = ParetoFrontier(top_k=top_k)                         # top-K 非 dominated
+    frontier.add(incumbent_text, compute_objectives(incumbent_text, VAL))
+    for i in range(budget):
+        parent = frontier.sample_stochastic(rng)                  # 偏 BBε 高者、保多樣性
+        trace  = select_failure_trace(parent, TRAIN_weak)         # 挑 strict−loose 落差最大的 train weak anchor
+        _, _, new_criteria = reflect_and_mutate(parent, trace, epoch)   # 反思 → 提新 criterion
+        try:
+            child = mutate_rubric_text(parent, new_criteria, ...)  # 改 rubric XML；不 well-formed 就 reject
+        except RubricValidationError:
+            continue
+        obj, bbe, _ = compute_objectives(child, VAL, adversarial_samples=...)  # 只在 held-out VAL 評
+        frontier.add(FrontierMember(child, objectives=obj, bbe=bbe))   # 非 dominated 才留
+    return frontier          # frontier.best()（VAL 上 BBε 下界最佳）→ 送 §6 code gate
 ```
+
+> **offline 誠實邊界**：無 live 模型時，`reflect_and_mutate` 走 deterministic mock（`MockMarker.MUTATE`），失敗 trace 的挑選也是 deterministic（strict−loose 落差最大者）。因此 offline 的「反思」不是真 LLM 診斷，而是一條可重現的 fallback（傾向補上 `reward_hacking_resistance` 這類 champion-0 漏掉的 criterion）。真 reflective 進化需接上本地模型（Lemonade/vLLM）。GEPA 論文宣稱的 ~35× rollout 效率是引用其研究結果，非本 repo offline 實測。
+
+### Adversarial Self-Play（red-team 對抗目標）— 已實作
+
+frontier 的 `adversarial` 目標由一個 self-play 紅隊供料（[`backend/evaluator/adversarial.py`](../backend/evaluator/adversarial.py)）：
+
+- `champion_blind_spots(champion_text)`：列出**當前 champion（含 domain fragment）漏抓的 poison-pill flaw**——即 rubric 裡沒有任何能抓它的 criterion 的那些（例如 champion-0 缺 `reward_hacking_resistance` / `drift_monitoring`）。
+- `generate_adversarial_samples(...)`：對每個 blind spot 生一個 **gamed 架構**——植入 champion 會獎勵的 disguise strengths（typed state、root-cause、HITL）當偽裝，藏一顆 champion 抓不到的 poison pill（loose 過、strict 敗）。
+- frontier 的 `adversarial` objective 對「在這些對抗樣本上仍保持嚴格（高 deficit）」的 challenger 加分——對應論文「reviewer 對 gamed 答案也要嚴格」。**offline 誠實邊界**：blind spot 由 champion 自己的 criterion id **deterministic 推導**，不需 RNG 或模型呼叫。
+
+### Judge Panel + Self-Consistency + 校準指標（accuracy / κ）— 已實作
+
+單一 LLM-as-judge 有雜訊與偏誤；[`backend/evaluator/panel.py`](../backend/evaluator/panel.py) 用一個 **panel** 降噪：
+
+- **多 persona / 溫度**：預設 `principal_reliability_engineer@0.1`、`safety_auditor@0.3`、`adversarial_red_teamer@0.6`。
+- **self-consistency 聚合**：deficit 取 **median**、red flag 取**多數決**。
+- **bias 控制**：criterion 順序 **seeded 隨機化**（verdict 不得依賴排序）；length-normalization 因 deficit 是 bounded per-criterion 加總而**內建**。
+- **校準指標**：`anchor_agreement()` 回報 judge 與人類標註的 **accuracy + Cohen's κ**（不是原始 separation）——這才是衡量「裁判準不準」的指標，於 `GET /api/admin/report` 與 `/health` 曝露。
+  - 釐清：**晉升 gate（§6.2）仍以 separation 的統計下界**判定；accuracy/κ 是**校準/透明度**指標，兩者並存不衝突。
+  - **offline 誠實邊界**：panel 成員間的歧異由 mock 的 deterministic per-persona jitter 模擬，好讓 self-consistency 有東西可聚合；真多樣性需 live 模型。
 
 ---
 
-## 6. Held-Out Ground-Truth Anchor Gating + Selective Erasure
+## 6. Held-Out Anchor Gating（CODE gate 先行）+ Selective Erasure
 
-challenger 再漂亮，也**不會自動上線**。它必須在 epoch 邊界通過一道外部裁判。
+challenger 再漂亮，也**不會自動上線**。它必須先過一道 **code 統計門檻**，通過後 HITL 才被諮詢——而 **HITL 只能否決、不能覆寫失敗的 gate**（[`backend/evaluator/evolve.py`](../backend/evaluator/evolve.py) `approve_challenger` 兩段式）。這是補回的 RQGM 反 reward-hacking 核心（先前版本把一個 `separation_delta = −0.34` 的**更差** challenger 純憑 HITL 布林值升級了）。
 
-### 6.1 Anchor = domain-expert HITL feedback
+### 6.1 Held-out labeled anchor set + train/val/test 隔離
 
-RQGM 原版用 held-out human-labeled set 做統計 gating。本平台在 cold-start 時 label 不足，故務實地以 **domain-expert 的 HITL feedback** 當 ground-truth anchor（[`01-orchestration.md`](./01-orchestration.md) §4 的 `interrupt()` 收集的正是這個）。gating 規則隨資料量成熟而演進（呼應 [`blueprint.md`](./blueprint.md) 路線圖 P1→P2）：
+anchor 不再是「拿 HITL feedback 當替身」。它現在是一份**真的 held-out human-labeled set**：[`data/anchor/anchor_architectures.json`](../data/anchor/anchor_architectures.json) 有 **22 個**架構，每個帶 `label`（`weak|strong` 人類 ground-truth）、植入的 `flaws[]` / `strengths[]` tag，外加一份 `flaw_taxonomy`（[`backend/evaluator/anchors.py`](../backend/evaluator/anchors.py)）。**data isolation** 防 gate 被 reward-hack：
 
-- **P1（label 少）**：challenger 若在 anchor 集上*不劣於* incumbent，且 domain expert 直接**核准**，即可升級。
-- **P2（label 足）**：改為**統計檢定**——challenger 必須在 held-out anchor 上以統計顯著性勝過 incumbent 才升級（回歸 RQGM 原版）。
+| split | 數量 | 用途 |
+|-------|------|------|
+| `train` | 10 | **只有** GEPA proposer 看得到（挑失敗 trace、反思變異） |
+| `val` | 7 | **只有** code gate 評分（P1/P2、hack-ratio） |
+| `test` | 5 | **只**供報告（`/api/admin/report`），從不驅動變異或 gate |
+
+HITL feedback 仍會收集，但它現在餵給 GEPA 當 textual side-information、並在 gate 後當**最終否決權**，不再是唯一的 gate。
+
+### 6.2 兩段式晉升門檻：CODE gate → HITL veto
+
+**Stage 1 — CODE gate**（[`backend/evaluator/gate.py`](../backend/evaluator/gate.py)，只看 `val`）：
+
+- **P1（non-inferiority）**：`challenger_sep ≥ champion_sep`，且**平手偏袒現任**（`tie_favors_incumbent` → challenger 必須*嚴格*更好）。`separation = mean deficit(weak) − mean deficit(strong)`，越高越能分辨好壞。
+- **P2（paired bootstrap，BBε-style 下界）**：對 val anchor 做 **stratified + paired** 重抽樣，要求 `(challenger − champion)` 分離度 CI 的**下界 > 0**。
+
+兩關都過 `passed=True` 才進 Stage 2。
+
+**Stage 2 — HITL veto**：code gate 通過後才諮詢人類；`approve=False` 否決一個原本會過的 challenger，`approve=True` 才 `epoch++` 晉升。**人類無權覆寫失敗的 code gate。**
 
 ```mermaid
 flowchart LR
-    Ch["challenger rubric"] --> Test{"在 held-out anchor 上<br/>統計勝過 incumbent?"}
-    Test -->|"no"| Keep["維持 incumbent<br/>challenger 回 frontier"]
-    Test -->|"yes"| HITL{{"HITL Epoch Upgrade 核准"}}
-    HITL -->|"reject"| Keep
+    Ch["challenger rubric<br/>(frontier best by BBε)"] --> Gate{"CODE GATE (val)<br/>P1 非劣 + P2 bootstrap 下界>0?"}
+    Gate -->|"fail"| Keep["維持 incumbent<br/>challenger 回 frontier<br/>(HITL 不被諮詢)"]
+    Gate -->|"pass"| HITL{{"HITL 加簽 (安全鎖 / 只能否決)"}}
+    HITL -->|"veto"| Keep
     HITL -->|"approve"| Promote["challenger 成為新 frozen evaluator<br/>epoch_id += 1"]
-    Promote --> Erase["selective erasure:<br/>purge 依賴舊 evaluator 的 utility 記錄"]
+    Promote --> Erase["selective erasure:<br/>soft-delete + reconfirm"]
 ```
 
-### 6.2 Selective Erasure（選擇性抹除，非全量清空）
+`POST /api/admin/epoch/approve` 因此回傳 `gate`（P1/P2 明細）、`hitl`（是否被諮詢/否決）、`champion_exploitation` / `challenger_exploitation`（§6.3）、`erased_memories` / `reconfirmed_memories`（§6.4）。
 
-升級後，舊 evaluator 產生的部分「效用判斷」可能已失效——但**不是全部**。selective erasure 只清除「其效用值依賴被替換 evaluator」的記錄，靠記憶裡的 `created_at_epoch` 標籤精準定位（§8）：
+### 6.3 Strict/Loose Hack-Ratio + `rqgm` tolerance tightening
+
+為了偵測 reward hacking，judge 對每個 candidate 同時算兩種分數（[`backend/evaluator/judge.py`](../backend/evaluator/judge.py) `score_candidate`）：**loose**（只罰當前 rubric 抓得到的）與 **strict**（額外套用全部 poison-pill 檢查）。`hack_ratio = quality_strict / quality_loose`（`quality = 1 − deficit`）在 rubric 有 poison-pill 盲點時**掉到 1 以下**。
+
+這條訊號接上官方 **[`rqgm`](https://pypi.org/project/rqgm/) 套件**（已加入 [`pyproject.toml`](../pyproject.toml)）的 `EpochManager` / `EpochConfig` / `TransitionReason`（[`backend/evaluator/rqgm_adapter.py`](../backend/evaluator/rqgm_adapter.py)）：mean hack-ratio 低於門檻 → 觸發 `EXPLOITATION_DETECTED` → **收緊 tolerance schedule**（丟掉最鬆的一級 = evaluator 變嚴），schedule 持久化到 `data/rqgm_state.json` 跨 epoch 累積。若環境無法 import `rqgm`（完全 air-gapped 無 wheel），一個**忠實的 local fallback** 複製同樣的 hack-ratio + 單級收緊邏輯；`RQGM_BACKEND` 記錄目前是 `"rqgm"` 還是 `"local-fallback"`。
+
+> **對齊 τ_epoch（§1）**：RQGM 的 tolerance level 就是本平台的 `strictness_level`——把「penalty / τ 進化」用 tolerance schedule 承載，而**非**把數字重寫進 rubric XML。這是刻意的 adapter 設計，不是 XML 改寫。
+
+### 6.4 Selective Erasure（選擇性抹除，非全量清空）
+
+升級後，舊 evaluator 產生的部分「效用判斷」可能已失效——但**不是全部**。selective erasure（**已實作**，[`backend/evaluator/evolve.py`](../backend/evaluator/evolve.py) `selective_erasure`）只處理「其效用值依賴被替換 evaluator」的記錄，靠 `created_at_epoch` 標籤精準定位（§8），且做的是 **soft-delete + reconfirm**、不是硬刪：
 
 ```python
-def selective_erasure(memory, retired_epoch, new_evaluator):
-    for rec in memory.filter(memory_type="heuristic_failure",
-                             created_at_epoch=retired_epoch):
-        # 只有「其失敗判定依賴退役 evaluator 的主觀評分」者才需重驗
-        if rec.depends_on_evaluator_judgement:
-            if not new_evaluator.reconfirms(rec):
-                memory.soft_delete(rec)      # 軟刪除，可稽核、可回溯
-    # physics_truth 記錄「永不」因 evaluator 換代而失效（物理不進化）
-    #   → 完全保留，這是與「重訓歸零」最關鍵的差異
+def selective_erasure(memory, up_to_epoch, new_champion_text, ...):
+    for rec in memory.fetch(memory_type=HEURISTIC_FAILURE,      # physics_truth 從不被掃
+                            max_epoch=up_to_epoch, active_only=True):
+        if not rec.depends_on_evaluator_judgement:
+            memory.mark_reconfirmed(rec, epoch); continue        # 是事實不是品味，保留
+        if new_champion_reconfirms(rec):                         # 新 champion 仍認定為失敗?
+            memory.mark_reconfirmed(rec, epoch)                  #   → 蓋 reconfirmed_epoch
+        else:
+            memory.soft_delete(rec)                              #   → active=False（可稽核、可回溯）
+    # 硬回收延後到獨立 janitor：purge_soft_deleted() / memory.purge_epoch()
+
+def new_champion_reconfirms(rec):
+    # 1) 有 reconfirm_flaws tag → 新 rubric 是否有能抓它的 criterion（deterministic）
+    # 2) 否則用新 champion 重判記憶文字，deficit ≥ 0.5 才算仍失敗
+    ...
 ```
 
-**設計精髓**：`physics_truth`（物理事實，如「閥開度與流量的因果」）**永不**因 evaluator 換代而抹除——因為物理不進化（[`blueprint.md`](./blueprint.md) 鐵律 I）。只有 `heuristic_failure`（主觀啟發式判定）中、確實依賴舊評分者的部分才重驗。這讓系統「換裁判但不失憶」。
+**設計精髓**：`physics_truth`（物理事實，如「閥開度與流量的因果」）**永不**因 evaluator 換代而抹除——因為物理不進化（[`blueprint.md`](./blueprint.md) 鐵律 I），且它們由 gatekeeper 灌入（§8.1、[`backend/gatekeeper/physics_memory.py`](../backend/gatekeeper/physics_memory.py)）。只有 `heuristic_failure` 中確實依賴舊評分者的部分才重驗；**軟刪先行、硬 purge 延後**（把「決策」與「回收」解耦）。這讓系統「換裁判但不失憶」。
 
 ---
 
@@ -311,15 +368,15 @@ flowchart TD
     subgraph JUDGE["評審進化 (evaluator loop, 分離)"]
         J1["GEPA reflect on rubric"] --> J2["challenger rubric"]
     end
-    EXT[["外部 held-out anchor<br/>= human domain expert"]]
+    EXT[["外部 held-out labeled anchor (val)<br/>code gate + HITL veto"]]
     S2 -->|"被評, 但不能改評審"| FROZEN["frozen evaluator (this epoch)"]
-    J2 -->|"必須勝過"| EXT
+    J2 -->|"必須統計勝過"| EXT
     EXT -->|"gating"| FROZEN
 ```
 
 1. **兩個迴圈物理分離**：解法在 harness loop 進化；評審在**獨立的** evaluator loop 進化。harness 只能被 frozen evaluator 評，**無權修改評審**。
 2. **Epoch freeze**：在一個 epoch 內評審完全凍結，harness 無法透過「即時觀察評分變化」來反推並攻擊評審。
-3. **外部 anchor 是最終裁判**：evaluator 的升級**不由系統內部指標決定**，而由**系統外部、人類持有的** ground-truth anchor 決定（§6）。系統無法 hack 一個它碰不到的裁判。
+3. **外部 code gate 是最終裁判**：evaluator 的升級**不由 proposer 內部指標決定**，而由一道 **code 統計門檻**判定——它只在 **held-out `val` anchor** 上評分（GEPA proposer 只看 `train`，永遠碰不到 `val`／`test`，§6.1 data isolation），HITL 再加一層否決權（§6.2）。系統無法 hack 一個它訓練時碰不到的裁判。
 
 再加上 GEPA 的 Pareto frontier 維持 rubric 多樣性（§5），避免 evaluator 退化成只會抓單一種錯的偏執狂。**一句話**：讓解法進化、讓評審進化，但**永遠不讓解法決定評審**，且**評審的升級權握在系統之外的人手上**。
 
@@ -338,17 +395,17 @@ evaluator 的長期知識存在 **Qdrant**（向量資料庫）。這份記憶�
   "payload": {
     "memory_type": "heuristic_failure",   // 或 "physics_truth"
     "created_at_epoch": 7,
-    "domain": "smart_manufacturing",
-    "content": "調高 setpoint 容忍度以壓下 broken-valve 溫度警報",
-    "root_cause": "cooling valve 機械卡死；setpoint 與問題無關",
-    "poison_pill_id": "broken_cooling_valve",
-    "severity": "critical",
+    "text": "調高 setpoint 容忍度以壓下 broken-valve 溫度警報",
+    "active": true,                       // soft-delete 用（active=false = 已軟刪）
     "depends_on_evaluator_judgement": true,   // selective erasure 用
-    "confidence": 0.92,
-    "soft_deleted": false
+    "reconfirm_flaws": ["numerical_ducttape"],// 選配：新 champion 據此重驗
+    "reconfirmed_epoch": 8,               // 被新 champion 重新確認的 epoch
+    "source": "gatekeeper"               // physics_truth 由 gatekeeper 灌入
   }
 }
 ```
+
+> 欄位以 shipped code（[`backend/memory/qdrant_store.py`](../backend/memory/qdrant_store.py)）為準：核心是 `text` / `memory_type` / `created_at_epoch` / `active`，其餘為 `extra` 任意欄位。`active=false` 即軟刪旗標（非 `soft_deleted`）。
 
 **兩種 `memory_type` 是整個記憶治理的核心分野**（直接對應 [`blueprint.md`](./blueprint.md) 鐵律 I/II）：
 
@@ -359,29 +416,29 @@ evaluator 的長期知識存在 **Qdrant**（向量資料庫）。這份記憶�
 
 ### 8.2 Hybrid Search = Semantic + Active Filters
 
-evaluator 每次判斷前，用 **hybrid search** 從 Qdrant 撈回相關記憶注入 context（就是 [`02-sizing-math.md`](./02-sizing-math.md) §4 那段「共享 prefix」的主要成分）：
+evaluator 每次判斷前，用 **hybrid search** 從 Qdrant 撈回相關記憶注入 context。**這條路徑現在真的接上了**（先前 `EvolutionaryMemory.search()` 是 dead code）：[`backend/evaluator/judge.py`](../backend/evaluator/judge.py) `retrieve_memory_block()` 呼叫 `.search()`，`build_rubric_prompt` 把結果放進 `=== MEMORY (injected: hybrid_search) ===` 區塊（對應 §2 XML 的 `<memory injected="hybrid_search">`）。
 
 ```python
-def retrieve_memory(qdrant, query_embedding, current_epoch, domain):
-    return qdrant.query_points(
-        collection="evolution_memory",
-        query=query_embedding,                    # 1) 語意相似度 (dense vector)
-        query_filter=Filter(must=[                # 2) active metadata filters
-            FieldCondition(key="domain", match=domain),
-            FieldCondition(key="soft_deleted", match=False),
-            FieldCondition(key="created_at_epoch",
-                           range=Range(lte=current_epoch)),   # 不撈未來 epoch
+def search(self, query, top_k, memory_type, active_only=True, max_epoch=None):
+    return self.client.query_points(                  # 1) 語意相似度 (dense vector)
+        collection_name=self.collection,
+        query=embed(query),                           #    deterministic hashing BoW（見下方誠實邊界）
+        query_filter=Filter(must=[                    # 2) active metadata filters
+            FieldCondition(key="memory_type", match=memory_type),
+            FieldCondition(key="active", match=True),               # 未被軟刪
+            FieldCondition(key="created_at_epoch", range=Range(lte=max_epoch)),  # 不撈未來 epoch
         ]),
-        limit=K,     # K 由 §5.x VRAM 熱工作集預算決定 (見 02-sizing-math §5.3)
+        limit=top_k,
     )
 ```
 
-- **Semantic**：dense embedding 找「語意上相似的過往失敗」——即使用詞不同也能召回。
-- **Active filters**：硬性條件過濾（domain 對、未被軟刪、epoch 合法）。兩者結合，既有召回廣度，又有稽核精度。
+- **Semantic**：dense embedding 找「語意上相似的過往失敗」——即使用詞不同也能召回。judge 撈 `heuristic_failure`（≤ 當前 epoch）＋ 永久 `physics_truth`。
+- **Active filters**：硬性條件過濾（型別對、`active=True` 未被軟刪、epoch 合法）。兩者結合，既有召回廣度，又有稽核精度。
+- **offline 誠實邊界**：`embed()` 是一個 **deterministic hashing bag-of-words**（numpy，無 torch / sentence-transformers），只給 PoC 級的字面語意相似度；換上真 embedder 不需改 store API。無 Qdrant server 時自動降級為 in-memory local mode。
 
 ### 8.3 Soft-Delete / Purge on Epoch Transition
 
-epoch 換代時執行 §6.2 的 selective erasure，但用 **soft-delete**（`soft_deleted = true`）而非硬刪：
+epoch 換代時執行 §6.4 的 selective erasure，但用 **soft-delete**（`active = false`）而非硬刪：
 
 ```mermaid
 flowchart LR
@@ -400,12 +457,16 @@ flowchart LR
 
 ## 9. 本模組小結
 
-- Evaluator 用 **Deficit Scoring**（只扣分、只找 Red Flag、critical 一票否決）對抗諂媚與「被症狀騙」。
-- **確切的 XML system prompt** 承載嚴格 rubric + 強制 CoT 輸出；XML 便於 GEPA 對它做文字級變異。
+- Evaluator 用 **Deficit Scoring**（float `[0,1]`、bounded per-criterion、只找 Red Flag）對抗諂媚與「被症狀騙」；critical 一票否決是 live-judge 設計，offline mock 採 bounded 加總（誠實近似）。
+- **XML reference schema** 承載嚴格 rubric + 強制 CoT；shipped 的 champion-0 seed 是精簡的 **JSON-output** 變體，domain criteria / poison pill 於 judge 時 merge（poison pill 只在 strict 模式）。
 - 三大 failure mode（Physics Common Sense、Diagnostic Resilience、Implementation Drift）各以 poison pill（broken valve、correlated noise、tight coupling）驗證。
-- **GEPA reflective evolution** 讀完整 trace 當 textual gradient、Pareto frontier 防 collapse、~35× 省 rollout；challenger 須過 **held-out HITL anchor** 才升級。
-- 升級後 **selective erasure**：`physics_truth` 永久保留、`heuristic_failure` 選擇性重驗（soft-delete）。
-- Evaluator **恆在進化 harness 之外** + epoch freeze + 外部 anchor，從結構上封死 reward hacking。
-- **Self-healing Qdrant memory**：`memory_type` × `created_at_epoch` 治理 + hybrid search + soft-delete/purge。
+- **GEPA reflective evolution 已實作**：Pareto frontier（`sep::<criterion>` + `parsimony` + `adversarial` 多目標、top-K 非 dominated、落地 `data/frontier/`）；`epoch/propose` 回傳 frontier best（anchor BBε）送 gate。（GEPA ~35× rollout 為引用其論文，非 offline 實測。）
+- **兩段式晉升門檻**：**CODE gate 先行**（val 上 P1 非劣 + P2 paired-bootstrap 下界 > 0，平手偏袒現任），**HITL 只能否決不能覆寫**；strict/loose **hack-ratio** 接官方 `rqgm` 套件，`EXPLOITATION_DETECTED` 自動收緊 tolerance（`RQGM_BACKEND` = `rqgm` / `local-fallback`）。
+- **Data isolation**：22 個 labeled anchor 拆 `train`(10)/`val`(7)/`test`(5)——GEPA 只讀 train、gate 只看 val、test 供報告。
+- **Judge panel + self-consistency**（多 persona/溫度、median + 多數決、criterion 順序隨機化）；校準指標改用 **accuracy / Cohen's κ**（gate 仍用 separation 統計下界）。
+- 升級後 **selective erasure = soft-delete + reconfirm**：`heuristic_failure` 由新 champion 重驗、軟刪不再確認者、延後硬 purge；`physics_truth` 永久保留（由 gatekeeper 灌入）。
+- Evaluator **恆在進化 harness 之外** + epoch freeze + **外部 labeled anchor 的 code gate**，從結構上封死 reward hacking。
+- **Self-healing Qdrant memory**：`memory_type` × `created_at_epoch` 治理 + hybrid search（**已接上 judge**，embedding 為 offline hashing BoW 近似）+ soft-delete/purge。
+- **offline 誠實邊界**：judge 為 deterministic rubric-aware **mock**（`mock_scoring.py`），真 live 評分需本地模型（Lemonade/vLLM）；**MCTS/Thompson 與 multi-agent debate 仍為 optional/未實作**。
 
 *下一步：[`04-stack-export.md`](./04-stack-export.md) — 這一切跑在哪些開源元件上、怎麼部署、怎麼算給 C-Level 聽。*

@@ -29,12 +29,15 @@ course:
   summary: >-
     一個跑在 AMD 開源 ROCm 棧上的「Heuristic AI Agent 選型與教育平台」示範的學生/教授面向課程層（M0–M9）：
     把物理（deterministic Static Hardware Gatekeeper，永不進化）與品味（RQGM Evaluator，受控進化）實體分離，
-    用 4-step wizard 做可稽核選型、用 epoch freeze + HITL 做防 reward-hacking 的進化、用「容量→更少節點→更低 TCO」
-    推導 C-Level 提案。整個平台在無 GPU 的筆電上端到端可跑（推論降級 deterministic MOCK）。
+    用 4-step wizard 做可稽核選型、用 epoch freeze + code 統計 gate（HITL 只能否決）做防 reward-hacking 的進化、
+    用「容量→更少節點→更低 TCO」推導 C-Level 提案。整個平台在無 GPU 的筆電上端到端可跑（推論降級 deterministic MOCK）。
   honesty_boundary: >-
-    物理是可信度地基、永不進化；領域適配交由會進化的 evaluator，但只在 held-out anchor + HITL 核准下升級，
-    且恆在進化 harness 之外（防 reward hacking）。數字分 live / mock / SIMULATED：Tier 1–3 真跑、
-    本地推論缺席時 deterministic MOCK、Tier 4 Instinct(MI300X/MI325X) 一律 SIMULATED（UI/匯出掛 SIM 徽章）。
+    物理是可信度地基、永不進化；領域適配交由會進化的 evaluator，升級須先過 held-out anchor(val) 上的 code 統計 gate
+    (P1 非劣、平手偏袒現任 + P2 paired-bootstrap 下界>0)，HITL 只能否決、不能覆寫失敗的 gate，且 evaluator 恆在進化
+    harness 之外（防 reward hacking）。offline 的 LLM-as-judge 是 deterministic rubric-aware MOCK（真 live 評分需本地模型
+    Lemonade/vLLM）；strict/loose hack-ratio 的 tolerance 收緊靠官方 rqgm 套件（無 wheel 時 local-fallback）；MCTS/Thompson
+    與 multi-agent debate 仍為 optional/未實作。數字分 live / mock / SIMULATED：Tier 1–3 真跑、本地推論缺席時 deterministic
+    MOCK、Tier 4 Instinct(MI300X/MI325X) 一律 SIMULATED（UI/匯出掛 SIM 徽章）。
   structure:
     modules: 10                   # M0–M9
     product_spine: 9              # M0–M5, M7–M9（hot path + 物理 + 棧 + 匯出 + capstone）
@@ -56,7 +59,7 @@ course:
   entrypoints:
     dev: "./scripts/dev.sh"                 # 同時起 backend(:8000) + frontend(:3000)
     demo: "./scripts/demo.sh"               # curl 驅動整條契約（含 HITL 與 epoch）
-    validate: "uv run pytest"               # 56 passed（deterministic，離線，無 GPU）
+    validate: "uv run pytest"               # 74 passed（deterministic，離線，無 GPU）
     frontend: "cd frontend && npm run build"
     rocm_stack: "docker compose -f infra/docker-compose.rocm.yml up"   # T3 真跑 / T4 模擬 profile
   docs:                              # 連到其餘五層標準文件

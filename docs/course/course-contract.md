@@ -127,18 +127,18 @@ M9 → M2, M3, M4, M8
 
 這是本平台可信度的地基，也是沒有任何一頁可以跨越的線：
 
-> **物理是可信度的地基，永不進化；領域適配交由會進化的評估器判斷，但只在人類核准下升級。
+> **物理是可信度的地基，永不進化；領域適配交由會進化的評估器判斷，但升級須先過 held-out anchor 上的 code 統計 gate，人類只能否決、不能覆寫。
 > Instinct（MI300X / MI325X）的數字一律標 SIMULATED。**
 >
 > **Physics is the trust foundation and never evolves; domain fit is judged by an evolving
-> evaluator that only upgrades under human approval. Instinct figures are SIMULATED.**
+> evaluator that only upgrades after passing a statistical code gate on held-out anchors — humans can veto but never override. Instinct figures are SIMULATED.**
 
 具體規則，每個模組都被檢查：
 
 - **物理不可被 LLM「講贏」**：feasible/infeasible、VRAM、tokens/s 由 deterministic Gatekeeper 決定，
   擋在任何 LLM 判斷之前（[`../01-orchestration.md`](../01-orchestration.md) §3）。
 - **來源標清楚**：每個數字標 `live` / `mock` / `SIMULATED`；**絕不**把模擬的 Instinct 數字當成真硬體實測。
-- **進化受控，不是「自動變聰明」**：evaluator 在 epoch 內凍結、只在 held-out anchor + **HITL 核准**下升級，
+- **進化受控，不是「自動變聰明」**：evaluator 在 epoch 內凍結、升級須先過 held-out anchor 上的 **code 統計 gate（P1/P2）**、**HITL 只能否決**，
   且恆在進化 harness 之外（防 reward hacking，見 [`../03-evaluator.md`](../03-evaluator.md) §7）。
 
 課程反覆示範的具體誠實點（來自 [`../DEMO.md`](../DEMO.md)）：MI300X 在 demo 中可承載約 **292** 條並行序列

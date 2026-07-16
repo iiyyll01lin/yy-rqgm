@@ -188,10 +188,10 @@ flowchart TD
     end
     subgraph COLD["Cold Path (非同步, 小時~天, 離線進化)"]
         direction TB
-        C1["收集 HITL feedback + trace"] --> C2["GEPA reflective mutation"]
-        C2 --> C3["population search / archive (DGM-style)"]
-        C3 --> C4["challenger vs incumbent @ anchor"]
-        C4 --> C5["HITL epoch upgrade 核准"]
+        C1["收集 HITL feedback + trace"] --> C2["GEPA reflective mutation<br/>+ self-play red-team"]
+        C2 --> C3["Pareto frontier population search<br/>(top-K 非 dominated, 落地 data/frontier)"]
+        C3 --> C4["CODE gate @ held-out val<br/>P1 非劣 + P2 bootstrap + hack-ratio"]
+        C4 --> C5["HITL veto (安全鎖, 只能否決)"]
     end
     H4 -->|"feedback = anchor"| C1
     H5 -->|"append-only trace"| C1
@@ -223,19 +223,19 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    E0["Epoch 0<br/>evaluator v0 (frozen)"] -->|"epoch boundary"| G0{{"challenger v1<br/>統計勝過 anchor?"}}
-    G0 -->|"no"| E0b["續用 v0"]
-    G0 -->|"yes → HITL 核准"| E1["Epoch 1<br/>evaluator v1 (frozen)"]
-    E1 -->|"selective erasure"| PURGE["清除依賴 v0 的 utility 記錄"]
+    E0["Epoch 0<br/>evaluator v0 (frozen)"] -->|"epoch boundary"| G0{{"CODE gate: challenger v1<br/>val 上統計勝過 v0?"}}
+    G0 -->|"no"| E0b["續用 v0<br/>(HITL 不被諮詢)"]
+    G0 -->|"yes → HITL veto (只能否決)"| E1["Epoch 1<br/>evaluator v1 (frozen)"]
+    E1 -->|"selective erasure<br/>soft-delete + reconfirm"| PURGE["軟刪依賴 v0 的 heuristic 記錄"]
 ```
 
 epoch 生命週期：
 
 1. **Epoch 內（frozen）**：hot path 所有判斷都由**同一個** frozen evaluator 產生，並蓋上 `epoch_id`。此期間 cold path 可以盡情 GEPA mutation，但產出的 challenger **不上線**。
-2. **Epoch 邊界（gating）**：challenger evaluator 必須在 **held-out ground-truth anchor**（本平台 = domain-expert HITL feedback）上*統計勝過* incumbent，才有資格取代它。cold-start label 不足時，退化為 HITL 直接核准（見 [`blueprint.md`](./blueprint.md) 路線圖 P1→P2）。
-3. **升級後（selective erasure）**：只清除「其效用值依賴被替換 evaluator」的記錄（靠 `created_at_epoch` 過濾），保留仍有效的知識。**非全量清空**——這是與「每次重訓歸零」最關鍵的差異。
+2. **Epoch 邊界（gating）**：challenger 必須先過一道 **code 統計 gate**——在 **held-out labeled anchor（`val` split）** 上以 P1 非劣（平手偏袒現任）+ P2 paired-bootstrap 下界 > 0 勝過 incumbent，並用 strict/loose **hack-ratio**（官方 `rqgm` 套件）偵測 reward hacking。通過後 HITL 才被諮詢，且**只能否決、不能覆寫失敗的 gate**（見 [`03-evaluator.md`](./03-evaluator.md) §6）。
+3. **升級後（selective erasure）**：對「其效用值依賴被替換 evaluator」的 `heuristic_failure` 記錄做 **soft-delete + 新 champion reconfirm**（靠 `created_at_epoch` 過濾）——保留仍有效者、軟刪不再確認者、延後硬 purge；`physics_truth` 永久保留。**非全量清空**——這是與「每次重訓歸零」最關鍵的差異。
 
-> 為什麼 evaluator 必須在進化 harness *之外*：若讓「解法」與「評分者」在同一迴圈內共同進化，系統會學會 reward hacking（生成專門討好當前評分者的解法）。把 evaluator 凍結在 epoch 內、且升級要過*外部* anchor，就從結構上斷了這條捷徑。完整論證見 [`03-evaluator.md`](./03-evaluator.md) §7。
+> 為什麼 evaluator 必須在進化 harness *之外*：若讓「解法」與「評分者」在同一迴圈內共同進化，系統會學會 reward hacking（生成專門討好當前評分者的解法）。把 evaluator 凍結在 epoch 內、且升級要過*外部* anchor 上的 **code gate**（proposer 只看 `train`、碰不到 `val`/`test`），就從結構上斷了這條捷徑。完整論證見 [`03-evaluator.md`](./03-evaluator.md) §7。
 
 ---
 
@@ -328,7 +328,7 @@ flowchart LR
 
 - 控制流恆為 `TaskAgent → Gatekeeper(物理) → Evaluator(品味, frozen) → HITL → Export`；deterministic 永遠擋在 fuzzy 前面。
 - HITL 用 LangGraph `interrupt()` + checkpointer + `Command(resume=)` 實作可無限期掛起的核准點，該回饋同時是 ground-truth anchor。
-- Hot/Cold path 用 epoch 邊界縫合；evaluator 在 epoch 內凍結，邊界才受控升級 + selective erasure，且 evaluator 恆在進化 harness 之外以防 reward hacking。
+- Hot/Cold path 用 epoch 邊界縫合；evaluator 在 epoch 內凍結，邊界由 **code 統計 gate（held-out `val`）先行、HITL 只能否決** 受控升級 + selective erasure（soft-delete + reconfirm），且 evaluator 恆在進化 harness 之外以防 reward hacking。
 - 智慧製造 anchor 用 Optimizer vs Evaluator 對抗 + **PyTorch surrogate on ROCm**（非 Omniverse）當開源驗證器。
 - Long-horizon 記憶退化的根因是 VRAM 零和取捨；MI300X 192 GB/5.3 TB/s 把取捨消掉，是架構級前提。
 

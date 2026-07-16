@@ -20,7 +20,7 @@ Diátaxis 類型：reference。
    數字當成真硬體實測、編造 benchmark、或把前端估算當 backend 計算，該項無論多漂亮都不能高於 *Developing*。
 2. **物理先於品味。** 獎勵先用 deterministic Gatekeeper 數學（`VRAM=W+KV+Act+Overhead`、`tokens/s=BW/bytes`）
    判可行性，再談 LLM 的 fuzzy 判斷；反過來（讓 LLM 判物理）扣分。
-3. **受控進化不是自動變聰明。** 最重要的觀念是：evaluator 會進化，但被 **epoch freeze + held-out anchor + HITL 核准**
+3. **受控進化不是自動變聰明。** 最重要的觀念是：evaluator 會進化，但被 **epoch freeze + held-out anchor 上的 code 統計 gate + HITL 否決**
    三重約束，且恆在進化 harness 之外（見 [M6](module-map.md)）。
 
 ---

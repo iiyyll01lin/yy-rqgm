@@ -105,10 +105,11 @@ gatekeeper 若判 infeasible 直接 **HARD REJECT**（省下 GPU 成本，不進
 feasible 則在 `hitl` 節點 **interrupt** 等待人類核准，`resume{approved:true}` 後完成。
 
 ### GEPA epoch 進化（`POST /epoch/propose` → `/epoch/approve`）
-`propose` 讀取累積回饋 + evaluator traces 當「文字梯度」，reflectively mutate champion rubric 成
-challenger，並在 held-out anchor set 上比 *separation*（`deficit(weak) − deficit(strong)`，越高越能分辨好壞）。
-`approve{approve:true}` 是 **HITL 閘門**：核准才 `epoch 0 → 1`、晉升 champion，並對舊 epoch 的
-`heuristic_failure` 記憶做 selective erasure（`physics_truth` 永久保留）。
+`propose` 讀取累積回饋 + evaluator traces 當「文字梯度」，跑 **GEPA Pareto frontier population search**（+ self-play 紅隊），
+回傳 frontier best（anchor BBε）。`approve` 是**兩段式**：先過 **code gate**（held-out `val` 上 P1 非劣 + P2 paired-bootstrap
+下界 > 0，平手偏袒現任；strict/loose hack-ratio 接 `rqgm` 套件），通過後 `approve{approve:true}` 的 **HITL 只能否決**（不能覆寫失敗 gate）；
+核准才 `epoch 0 → 1`、晉升 champion，並對舊 epoch 的 `heuristic_failure` 記憶做 **selective erasure（soft-delete + reconfirm）**（`physics_truth` 永久保留）。
+`GET /api/admin/report` 可看 val/test separation、hack-ratio、judge accuracy/κ。
 
 > `epoch/approve` 會寫入 `data/epoch_state.json`。回到 epoch-0 seed champion：
 > `rm -f data/epoch_state.json data/rubric_history/challenger-*.xml`。
@@ -120,4 +121,4 @@ challenger，並在 held-out anchor set 上比 *separation*（`deficit(weak) −
 1. **可信度地基**：所有 VRAM / tokens/s / max-population 都來自 deterministic 物理，可稽核、Live/Mock 一致。
 2. **教育性 upsell**：不是「買最貴的」，而是用**你的領域語言**說明「差哪塊、升級解鎖什麼」。
 3. **AMD 全開源路徑**：從 Ryzen AI / Radeon 真跑，到 Instinct 模擬，一條 ROCm 棧走到底，零供應商鎖定。
-4. **受控進化**：evaluator 會進化，但被 epoch 凍結 + HITL 核准雙重約束，結構性地防 reward-hacking。
+4. **受控進化**：evaluator 會進化，但被 epoch 凍結 + held-out anchor 上的 code 統計 gate（HITL 只能否決）約束，結構性地防 reward-hacking。

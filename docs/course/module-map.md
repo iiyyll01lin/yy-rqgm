@@ -24,13 +24,13 @@ Diátaxis 類型：reference。
 
 | 模組 | 主題 · Theme | 藍圖 / Part | 軌 | 先修 | 教材 · Material | Hands-on 任務 | 驗證 · Validate |
 |---|---|---|---|---|---|---|---|
-| **M0** | 雙閘門與誠實邊界（live/mock/simulated） | blueprint · I | core | — | [`../blueprint.md`](../blueprint.md) §0–3 + [`README.md`](../../README.md) | 讀懂 `gatekeeper/` vs `evaluator/` 的目錄級分離 | `uv run pytest -q`（56 passed，離線） |
+| **M0** | 雙閘門與誠實邊界（live/mock/simulated） | blueprint · I | core | — | [`../blueprint.md`](../blueprint.md) §0–3 + [`README.md`](../../README.md) | 讀懂 `gatekeeper/` vs `evaluator/` 的目錄級分離 | `uv run pytest -q`（74 passed，離線） |
 | **M1** | 預備知識與環境 | blueprint · I | core | M0 | [`README.md`](../../README.md) Quickstart | 起服務、開 UI、看 Live/Mock 徽章 | `./scripts/dev.sh` → 開 `http://localhost:3000` |
 | **M2** | Deterministic Gatekeeper 物理數學 | A2 · II | core | M1 | [`../02-sizing-math.md`](../02-sizing-math.md) + [`backend/gatekeeper/vram.py`](../../backend/gatekeeper/vram.py) · [`bandwidth.py`](../../backend/gatekeeper/bandwidth.py) | 手算 `VRAM=W+KV+Act+Overhead`、`tokens/s=BW/bytes`，對照 backend | `uv run pytest tests/test_vram.py tests/test_bandwidth.py tests/test_feasibility.py` |
 | **M3** | LangGraph 編排與 HITL | A1 · III | core | M1 | [`../01-orchestration.md`](../01-orchestration.md) + [`backend/graph/orchestrator.py`](../../backend/graph/orchestrator.py) · [`state.py`](../../backend/graph/state.py) | 跑 `orchestrate` → HITL interrupt → `resume{approved:true}` | `POST /api/session/{id}/orchestrate` + `/orchestrate/resume`；`uv run pytest tests/test_domains_router.py` |
 | **M4** | RQGM Evaluator：deficit scoring + poison pill | A3 · III | core | M3 | [`../03-evaluator.md`](../03-evaluator.md) + [`backend/evaluator/rubric.xml`](../../backend/evaluator/rubric.xml) · [`judge.py`](../../backend/evaluator/judge.py) | 對弱設計跑 `evaluate`，讀 `deficit_score` + `red_flags` | `POST /api/session/{id}/evaluate`；`uv run pytest tests/test_inference_mock.py` |
 | **M5** | Prefix caching / KV explosion / MI300X 記憶體優勢 | A2 · II | core | M2 | [`../02-sizing-math.md`](../02-sizing-math.md) §4–5 | 掃跨 tier `simulate`，看 `max_population` 與 prefix 節省（Instinct 標 SIM） | `POST /api/session/{id}/simulate`（population, prefix_ratio） |
-| **M6** | Epoch freeze + GEPA + selective erasure | A1 §6 / A3 §5–8 · IV | adv | M4, M5 | [`../03-evaluator.md`](../03-evaluator.md) §5–8 + [`backend/evaluator/evolve.py`](../../backend/evaluator/evolve.py) · [`versioning.py`](../../backend/evaluator/versioning.py) | `epoch/propose`（challenger separation）→ `epoch/approve`（HITL 閘）→ selective erasure | `POST /api/admin/epoch/propose` + `/approve`；`uv run pytest tests/test_evolution.py` |
+| **M6** | Epoch freeze + GEPA + selective erasure | A1 §6 / A3 §5–8 · IV | adv | M4, M5 | [`../03-evaluator.md`](../03-evaluator.md) §5–8 + [`backend/evaluator/evolve.py`](../../backend/evaluator/evolve.py) · [`versioning.py`](../../backend/evaluator/versioning.py) | `epoch/propose`（GEPA Pareto frontier）→ `epoch/approve`（code gate + HITL veto）→ selective erasure（soft-delete + reconfirm） | `POST /api/admin/epoch/propose` + `/approve`；`uv run pytest tests/test_evolution.py` |
 | **M7** | ROCm 開源棧與部署 | A4 §1,3 · V | core | M2 | [`../04-stack-export.md`](../04-stack-export.md) §1,3 + [`infra/docker-compose.rocm.yml`](../../infra/docker-compose.rocm.yml) | 讀 ROCm 旗標（`/dev/kfd`、`VLLM_ROCM_USE_AITER=1`、`--enable-prefix-caching`）；量化骨架 | `docker compose -f infra/docker-compose.rocm.yml up`；`python scripts/quantize_quark.py`（骨架） |
 | **M8** | Export：可跑 PoC + C-Level TCO/ROI | A4 §2,4 · V | core | M2, M7 | [`../04-stack-export.md`](../04-stack-export.md) §4 + [`backend/export/tco.py`](../../backend/export/tco.py) | 跑 `export`，讀 TCO markdown（每個數字回溯 Gatekeeper 數學）+ 6 個可跑檔 | `POST /api/session/{id}/export` |
 | **M9** | Capstone：智慧製造 anchor 端到端 | DEMO · VI | core | M2,M3,M4,M8 | [`../DEMO.md`](../DEMO.md) + [`data/anchor/anchor_architectures.json`](../../data/anchor/anchor_architectures.json) | 4-step wizard 全跑 + HITL + epoch 進化（Instinct 標 SIM） | `./scripts/demo.sh`；`uv run pytest tests/test_api_smoke.py` |
@@ -38,7 +38,7 @@ Diátaxis 類型：reference。
 > **驗證說明 · Validation note.** 每個模組的**筆電安全**總入口是 deterministic 測試套件與 mock 降級：
 >
 > ```bash
-> uv run pytest              # backend 56 passed（deterministic，離線，無需 GPU）
+> uv run pytest              # backend 74 passed（deterministic，離線，無需 GPU）
 > ./scripts/demo.sh          # 端到端契約走查（推論無 server 時自動 MOCK）
 > ```
 >

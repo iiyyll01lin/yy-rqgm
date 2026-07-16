@@ -31,7 +31,7 @@ Diátaxis 類型：reference。
 
 ## 驗證怎麼跑 · How validation runs
 
-- **deterministic 閘。** `uv run pytest` = **56 passed**（離線、無需 GPU）。物理數學測試
+- **deterministic 閘。** `uv run pytest` = **74 passed**（離線、無需 GPU）。物理數學測試
   [`tests/test_vram.py`](../../tests/test_vram.py)、[`tests/test_bandwidth.py`](../../tests/test_bandwidth.py)、
   [`tests/test_feasibility.py`](../../tests/test_feasibility.py) 把 Gatekeeper 公式鎖死 —— 這是 `deterministic` 數字的權威。
 - **端到端契約。** `./scripts/demo.sh` curl 驅動整條契約（domain→diagnose→simulate→export + orchestrate/epoch）；
@@ -54,9 +54,9 @@ Diátaxis 類型：reference。
 | **tokens/s 上界**（Llama-3-70B int4 35 GB, batch=1） | 頻寬數學 | H100 ~67 · H200 ~96 · MI300X ~106 · MI325X ~120（×0.7 MBU） | [`../02-sizing-math.md`](../02-sizing-math.md) §3.3 | `deterministic`（解析上界；T4 規格值） | 02-sizing-math |
 | **RQGM evaluate**（弱設計） | Evaluator | `deficit_score ≈ 0.6`；red_flags = `physics_common_sense`（duct-tape）+ `diagnostic_resilience`（相關噪聲） | [`backend/evaluator/judge.py`](../../backend/evaluator/judge.py) + [`rubric.xml`](../../backend/evaluator/rubric.xml) | `mock`（deterministic judge）/ `live-hw`（有 Lemonade 時） | DEMO |
 | **Orchestrate + HITL** | LangGraph | `router→task_agent→gatekeeper→(feasible)→evaluator→hitl`；infeasible **HARD REJECT**（省 GPU）；`resume{approved:true}` 完成 | [`backend/graph/orchestrator.py`](../../backend/graph/orchestrator.py) + [`tests/test_domains_router.py`](../../tests/test_domains_router.py) | `deterministic`（路由/閘）+ `mock`（LLM node） | DEMO |
-| **Epoch 進化** | Evaluator | `epoch/propose` 產 challenger（anchor separation ↑）→ `epoch/approve`(HITL) → **epoch 0→1** + selective erasure（`physics_truth` 永久保留） | [`backend/evaluator/evolve.py`](../../backend/evaluator/evolve.py) + [`versioning.py`](../../backend/evaluator/versioning.py) + [`tests/test_evolution.py`](../../tests/test_evolution.py) | `deterministic` / `mock`（可重現） | DEMO + 03-evaluator |
+| **Epoch 進化** | Evaluator | `epoch/propose` 跑 GEPA Pareto frontier + 紅隊 → frontier best；`epoch/approve` **先過 code gate**（val P1 非劣 + P2 bootstrap）再 HITL 加簽（只能否決）→ **epoch 0→1** + selective erasure（soft-delete + reconfirm；`physics_truth` 永久保留） | [`backend/evaluator/evolve.py`](../../backend/evaluator/evolve.py) + [`gate.py`](../../backend/evaluator/gate.py) + [`frontier.py`](../../backend/evaluator/frontier.py) + [`rqgm_adapter.py`](../../backend/evaluator/rqgm_adapter.py) + [`tests/test_rqgm_phases.py`](../../tests/test_rqgm_phases.py) | `deterministic` / `mock`（可重現） | DEMO + 03-evaluator |
 | **Export**（目標 MI300X） | Export | **FEASIBLE**；TCO/ROI markdown + 6 個可跑檔（compose/Dockerfile/app.py/README/requirements/.env） | [`backend/export/tco.py`](../../backend/export/tco.py) + [`deploy_template/renderers.py`](../../backend/export/deploy_template/renderers.py) | `SIMULATED`（目標 T4）+ `deterministic`（sizing） | DEMO Step 4 |
-| **後端測試套件** | 全平台 | **56 passed**（deterministic，離線，無 GPU） | [`tests/`](../../tests/test_api_smoke.py) | `deterministic` | README |
+| **後端測試套件** | 全平台 | **74 passed**（deterministic，離線，無 GPU） | [`tests/`](../../tests/test_api_smoke.py) | `deterministic` | README |
 
 ---
 

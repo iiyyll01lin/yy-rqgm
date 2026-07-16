@@ -39,7 +39,7 @@
 
 ### B2. 可重現 · Reproducibility
 
-- [ ] `uv run pytest` **GREEN（56 passed）** —— deterministic、離線、無需 GPU；物理數學測試（`test_vram` / `test_bandwidth` /
+- [ ] `uv run pytest` **GREEN（74 passed）** —— deterministic、離線、無需 GPU；物理數學測試（`test_vram` / `test_bandwidth` /
   `test_feasibility`）必過。
 - [ ] `./scripts/demo.sh` 在筆電上端到端跑通（推論無 server 時自動 MOCK，Qdrant 缺席時 in-memory）。
 - [ ] 我引用的每個 REST endpoint / `pytest` 檔 / 腳本都真的存在且行為如描述。
@@ -64,7 +64,7 @@
 ## 一鍵筆電閘 · The one-command gate
 
 ```bash
-uv run pytest          # backend 56 passed（deterministic，離線，無需 GPU）
+uv run pytest          # backend 74 passed（deterministic，離線，無需 GPU）
 ./scripts/demo.sh      # 端到端契約走查（推論無 server 時自動 MOCK；Instinct 標 SIMULATED）
 ```
 

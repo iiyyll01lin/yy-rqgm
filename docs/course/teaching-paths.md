@@ -127,6 +127,6 @@ flowchart LR
 - **三分法（先讀這條）**：live（真跑 / deterministic 物理）· mock（無本地推論 server 的 deterministic 降級）·
   simulated（Tier 4 Instinct）。見 [`course-contract.md`](course-contract.md) §5 與 L5 [`validation-ledger.md`](validation-ledger.md)。
 - **物理不可被 LLM 講贏**：Gatekeeper 擋在所有 LLM 判斷前（[`../01-orchestration.md`](../01-orchestration.md) §3）。
-- **筆電可跑**：`./scripts/dev.sh` + `./scripts/demo.sh` 在無 GPU 的筆電上端到端跑；`uv run pytest` 56 passed 離線。
-- **進化受控**：evaluator 凍結於 epoch、只在 HITL 核准下升級、恆在進化 harness 之外（防 reward hacking，見
+- **筆電可跑**：`./scripts/dev.sh` + `./scripts/demo.sh` 在無 GPU 的筆電上端到端跑；`uv run pytest` 74 passed 離線。
+- **進化受控**：evaluator 凍結於 epoch、升級須先過 held-out anchor 上的 code 統計 gate（HITL 只能否決）、恆在進化 harness 之外（防 reward hacking，見
   [`../03-evaluator.md`](../03-evaluator.md) §7）。
