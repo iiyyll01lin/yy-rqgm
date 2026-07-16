@@ -398,6 +398,32 @@ def approve_agent_challenger(
     }
 
 
+def measure_champion_utility(
+    *,
+    rubric_text: str | None = None,
+    client: LemonadeClient | None = None,
+    record: bool = True,
+) -> float:
+    """Score the champion PROGRAM on the ``val`` needs under the current (frozen)
+    champion evaluator and (by default) persist it as the utility baseline.
+
+    Called before an evaluator epoch boundary so :func:`selective_erasure_agent`
+    has a like-for-like (val-measured) ``before`` to compare the re-score against.
+    """
+    client = client or get_lemonade_client()
+    if rubric_text is None:
+        rubric_text = versioning.get_champion_rubric_text()
+    evaluator_epoch = versioning.get_epoch()
+    val_needs = needs_ds.load_needs(needs_ds.VAL)
+    champ = score_program(
+        agent_versioning.get_champion_program(), val_needs,
+        rubric_text=rubric_text, evaluator_epoch=evaluator_epoch, client=client,
+    )
+    if record:
+        agent_versioning.record_champion_utility(champ.utility, evaluator_epoch)
+    return champ.utility
+
+
 # ---------------------------------------------------------------------------
 # SELECTIVE ERASURE of agent utility at an EVALUATOR epoch boundary
 # ---------------------------------------------------------------------------

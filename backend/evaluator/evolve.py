@@ -742,6 +742,22 @@ def approve_challenger(
     except Exception:
         pass
 
+    # RQGM co-evolution coupling: an EVALUATOR epoch upgrade makes every AGENT
+    # utility measured under the PRIOR champion stale (it was the old jury's
+    # verdict). Re-score the agent archive under the NEW champion (agent-utility
+    # selective erasure) — the agent-half mirror of the memory erasure above. A
+    # program that only looked good because it gamed a prior champion blind spot
+    # loses utility here. Best-effort: must never break an evaluator promotion.
+    agent_erasure: dict[str, Any] = {}
+    try:
+        from backend.agent import agent_evolve as _agent_evolve
+
+        agent_erasure = _agent_evolve.selective_erasure_agent(
+            new_champion_text, result["epoch_id"], client=client
+        )
+    except Exception:
+        agent_erasure = {}
+
     return {
         "epoch_id": result["epoch_id"],
         "applied": True,
@@ -753,7 +769,8 @@ def approve_challenger(
         "hitl": {"consulted": True, "approved": True, "vetoed": False},
         "erased_memories": erasure["soft_deleted"],
         "reconfirmed_memories": erasure["reconfirmed"],
-        "note": "physics_truth memories are preserved forever; obsolete heuristic_failure soft-deleted.",
+        "agent_utility_erasure": agent_erasure,
+        "note": "physics_truth memories are preserved forever; obsolete heuristic_failure soft-deleted; agent utilities re-scored under the new champion.",
     }
 
 
