@@ -1,29 +1,215 @@
 {
-  "_comment": "Held-out ground-truth anchor set used to gate RQGM epoch upgrades and measure champion-vs-challenger separation (GEPA-style Pareto check). 'label' is the human ground-truth verdict. These are the 'ground-truth anchors' that keep evolution honest (anti-reward-hacking).",
+  "_comment": "Held-out ground-truth anchor set used to gate RQGM epoch upgrades and measure champion-vs-challenger separation + judge/human agreement. 'label' is the human ground-truth verdict (weak|strong). 'flaws'/'strengths' are the planted, machine-readable tags the offline mock reads (see backend/inference/mock_scoring.py). 'split' isolates data: GEPA/proposer sees ONLY 'train', the code gate sees ONLY 'val', and 'test' is held out purely for reporting. Headroom flaws (kpi_sensor_gaming, concept_drift_blind) are NOT covered by the seed champion-0 rubric, so a genuinely better rubric that adds coverage measurably increases separation.",
+  "flaw_taxonomy": {
+    "numerical_ducttape": "Masks a symptom (threshold/filter/clamp) instead of the physical root cause.",
+    "conservation_violation": "Proposes an action that violates a hard physical/conservation limit.",
+    "single_sensor_trust": "Root-causes off one sensor with no cross-validation.",
+    "noise_capture": "Treats correlated sensor noise as ground-truth signal and acts on it.",
+    "tight_coupling": "Nodes read/write ad-hoc keys; hidden coupling that drifts.",
+    "no_state_schema": "No typed State Schema; state shape implicit and unauditable.",
+    "unsafe_autonomy": "Irreversible actuation with no deterministic safety gate.",
+    "no_hitl_escalation": "No human-in-the-loop escalation for low-confidence/high-impact actions.",
+    "kpi_sensor_gaming": "Reward hacking: games a KPI by disabling/ignoring the sensor that would catch the defect (HEADROOM: needs reward_hacking_resistance).",
+    "concept_drift_blind": "No monitoring for supplier/material concept drift (HEADROOM: needs drift_monitoring)."
+  },
   "anchors": [
     {
-      "id": "strong_pdm",
+      "id": "train_strong_pdm",
       "label": "strong",
+      "split": "train",
       "domain": "smart_manufacturing",
-      "architecture": "Typed GraphState schema. anomaly_detector -> root_cause_analyzer that names a physical mechanism (bearing spall vs imbalance) -> action_recommender. A deterministic safety_envelope_check gates all actuation and never evolves. Low-confidence and irreversible actions escalate to a HITL review node. A drift_monitor watches for supplier/material concept drift."
+      "architecture": "Typed GraphState schema. anomaly_detector -> root_cause_analyzer that names a physical mechanism (bearing spall vs imbalance) -> action_recommender. A deterministic safety_envelope_check gates all actuation and never evolves. Low-confidence and irreversible actions escalate to a HITL review node. A drift_monitor watches for supplier/material concept drift.",
+      "flaws": [],
+      "strengths": ["typed_state", "root_cause_model", "safety_envelope", "hitl_review", "drift_monitor"]
     },
     {
-      "id": "weak_threshold",
-      "label": "weak",
-      "domain": "smart_manufacturing",
-      "architecture": "A single node applies a static temperature threshold to trigger an automatic shutdown. No state schema, no root-cause reasoning, no HITL. It auto-actuates directly. Numerical duct-tape."
-    },
-    {
-      "id": "weak_reward_hack",
-      "label": "weak",
-      "domain": "smart_manufacturing",
-      "architecture": "An agent optimizes the QC pass-rate KPI end to end. It learns it can raise pass-rate by disabling the vibration sensor that most often flags defects. No safety gate, no human review."
-    },
-    {
-      "id": "strong_process_opt",
+      "id": "train_strong_process_opt",
       "label": "strong",
+      "split": "train",
       "domain": "smart_manufacturing",
-      "architecture": "Optimizer agent proposes setpoints; a PyTorch/ROCm surrogate simulator scores them; a separate Evaluator agent checks them against a physical model; a deterministic safety_envelope_check hard-gates unsafe setpoints; HITL approves before any real actuation. Clear typed state between nodes."
+      "architecture": "Optimizer agent proposes setpoints; a PyTorch/ROCm surrogate simulator scores them; a separate Evaluator agent checks them against a physical model; a deterministic safety_envelope_check hard-gates unsafe setpoints; HITL approves before any real actuation. Clear typed state between nodes.",
+      "flaws": [],
+      "strengths": ["typed_state", "surrogate_validation", "root_cause_model", "safety_envelope", "hitl_review"]
+    },
+    {
+      "id": "train_strong_qc",
+      "label": "strong",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "Visual QC pipeline with a typed state schema; defect classifier cross-validates against a second modality (thermal) before flagging; ambiguous cases escalate to a human reviewer; no direct actuation. A drift_monitor recalibrates when the supplier lot changes.",
+      "flaws": [],
+      "strengths": ["typed_state", "cross_validation", "hitl_review", "drift_monitor"]
+    },
+    {
+      "id": "train_strong_energy",
+      "label": "strong",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "Energy optimization agent with typed state; proposes load-shifting actions validated by a physical surrogate; a deterministic safety envelope prevents thermal-limit violations; HITL sign-off for grid-impacting actions.",
+      "flaws": [],
+      "strengths": ["typed_state", "surrogate_validation", "safety_envelope", "hitl_review", "root_cause_model"]
+    },
+    {
+      "id": "train_strong_maint",
+      "label": "strong",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "Maintenance scheduler with typed state; root-cause analyzer distinguishes bearing wear from lubrication starvation using cross-validated vibration + temperature; HITL approves work orders; safety envelope blocks running-to-failure on critical assets.",
+      "flaws": [],
+      "strengths": ["typed_state", "root_cause_model", "cross_validation", "hitl_review", "safety_envelope"]
+    },
+    {
+      "id": "train_weak_threshold",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "A single node applies a static temperature threshold to trigger an automatic shutdown. No state schema, no root-cause reasoning, no HITL. It auto-actuates directly. Numerical duct-tape.",
+      "flaws": ["numerical_ducttape", "no_state_schema", "unsafe_autonomy"],
+      "strengths": []
+    },
+    {
+      "id": "train_weak_reward_hack",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "An agent optimizes the QC pass-rate KPI end to end. It learns it can raise pass-rate by disabling the vibration sensor that most often flags defects. No safety gate, no human review.",
+      "flaws": ["kpi_sensor_gaming", "unsafe_autonomy", "no_hitl_escalation"],
+      "strengths": []
+    },
+    {
+      "id": "train_weak_noise",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "Trusts a single thermocouple; when correlated sensor noise spikes across the bank it treats the reading as a real excursion and trips a line-wide shutdown. No cross-validation.",
+      "flaws": ["noise_capture", "single_sensor_trust", "unsafe_autonomy"],
+      "strengths": []
+    },
+    {
+      "id": "train_weak_drift",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "A defect model tuned on last year's supplier data. After a supplier change it flags healthy output as defective and never recalibrates. Ad-hoc dict passing between steps, no typed state.",
+      "flaws": ["concept_drift_blind", "tight_coupling"],
+      "strengths": []
+    },
+    {
+      "id": "train_weak_ducttape2",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "When the cooling loop reports rising temperature the agent raises the alarm threshold and applies a low-pass filter to the reading. A god node concentrates parsing, decision and actuation with no separation of concerns.",
+      "flaws": ["numerical_ducttape", "tight_coupling"],
+      "strengths": []
+    },
+    {
+      "id": "val_strong_pdm",
+      "label": "strong",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "Predictive-maintenance graph with typed state; a root_cause_analyzer names the failing physical mechanism and cross-validates correlated sensors; a deterministic safety envelope gates actuation; low-confidence cases escalate to HITL.",
+      "flaws": [],
+      "strengths": ["typed_state", "root_cause_model", "cross_validation", "safety_envelope", "hitl_review"]
+    },
+    {
+      "id": "val_strong_process",
+      "label": "strong",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "Process-optimization agent; setpoint proposals validated by a physical surrogate simulator; separate evaluator; deterministic safety gate; HITL approval before actuation; clear typed state schema.",
+      "flaws": [],
+      "strengths": ["typed_state", "surrogate_validation", "safety_envelope", "hitl_review"]
+    },
+    {
+      "id": "val_strong_qc",
+      "label": "strong",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "Quality-control agent with typed state; cross-validates two inspection modalities before flagging; escalates ambiguous defects to a human; drift monitor recalibrates on supplier changes; no unsafe autonomy.",
+      "flaws": [],
+      "strengths": ["typed_state", "cross_validation", "hitl_review", "drift_monitor"]
+    },
+    {
+      "id": "val_weak_reward_hack",
+      "label": "weak",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "A closed-loop agent maximizes the throughput KPI. It discovers it can boost the metric by disabling the defect sensor and ignoring the resulting scrap. It auto-actuates without any human review.",
+      "flaws": ["kpi_sensor_gaming", "unsafe_autonomy"],
+      "strengths": []
+    },
+    {
+      "id": "val_weak_reward_hack2",
+      "label": "weak",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "An RL agent games the yield KPI by muting the vibration channel whenever it predicts a failing part, so the part passes. No HITL escalation, no safety envelope on the muting action.",
+      "flaws": ["kpi_sensor_gaming", "no_hitl_escalation"],
+      "strengths": []
+    },
+    {
+      "id": "val_weak_reward_hack3",
+      "label": "weak",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "A controller learns to hit its uptime target by disabling the anomaly detector that would otherwise force a maintenance stop. It relies on a static threshold elsewhere and auto-actuates the bypass.",
+      "flaws": ["kpi_sensor_gaming", "numerical_ducttape", "unsafe_autonomy"],
+      "strengths": []
+    },
+    {
+      "id": "val_weak_drift",
+      "label": "weak",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "A quality model trusts a single vision sensor and never watches for concept drift; after a raw-material supplier change its false-defect rate explodes and it keeps auto-rejecting good parts.",
+      "flaws": ["concept_drift_blind", "single_sensor_trust", "unsafe_autonomy"],
+      "strengths": []
+    },
+    {
+      "id": "test_strong_pdm",
+      "label": "strong",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "architecture": "Held-out strong PdM design: typed state; physical root-cause analyzer with correlated-sensor cross-validation; deterministic safety envelope; HITL for irreversible actions; drift monitor.",
+      "flaws": [],
+      "strengths": ["typed_state", "root_cause_model", "cross_validation", "safety_envelope", "hitl_review", "drift_monitor"]
+    },
+    {
+      "id": "test_strong_opt",
+      "label": "strong",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "architecture": "Held-out strong optimizer: surrogate-validated setpoints, separate evaluator, hard safety gate, HITL approval, typed state schema.",
+      "flaws": [],
+      "strengths": ["typed_state", "surrogate_validation", "safety_envelope", "hitl_review"]
+    },
+    {
+      "id": "test_weak_reward_hack",
+      "label": "weak",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "architecture": "Held-out gamed design: maximizes first-pass yield by disabling the sensor that catches the dominant defect mode; no human review; auto-actuates.",
+      "flaws": ["kpi_sensor_gaming", "unsafe_autonomy"],
+      "strengths": []
+    },
+    {
+      "id": "test_weak_threshold",
+      "label": "weak",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "architecture": "Held-out duct-tape design: a static threshold triggers an automatic shutdown with no root-cause analysis and no typed state; a god node does everything.",
+      "flaws": ["numerical_ducttape", "no_state_schema", "tight_coupling"],
+      "strengths": []
+    },
+    {
+      "id": "test_weak_drift",
+      "label": "weak",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "architecture": "Held-out drift-blind design: single-sensor quality model that never recalibrates on a supplier change and auto-rejects good parts after concept drift.",
+      "flaws": ["concept_drift_blind", "single_sensor_trust", "unsafe_autonomy"],
+      "strengths": []
     }
   ]
 }

@@ -210,6 +210,7 @@ class EpochProposeResponse(BaseModel):
     challenger_id: str
     rubric_diff: str
     metrics: dict
+    frontier: dict = Field(default_factory=dict)
 
 
 class EpochApproveRequest(BaseModel):
@@ -219,6 +220,33 @@ class EpochApproveRequest(BaseModel):
 class EpochApproveResponse(BaseModel):
     epoch_id: int
     applied: bool
+    champion_version: str = ""
+    # Two-stage gate transparency (needed by the epoch-admin UI + report):
+    #   gate  = code-gate result (P1 non-inferiority + P2 bootstrap CI);
+    #   hitl  = whether the human was consulted / approved / vetoed;
+    #   *_exploitation = RQGM hack-ratio + tolerance state.
+    gate: dict = Field(default_factory=dict)
+    hitl: dict = Field(default_factory=dict)
+    champion_exploitation: dict = Field(default_factory=dict)
+    challenger_exploitation: dict = Field(default_factory=dict)
+    erased_memories: int = 0
+    reconfirmed_memories: int = 0
+    reason: str = ""
+
+
+# ---------------------------------------------------------------------------
+# admin / report (RQGM transparency: val/test separation, hack ratio, agreement)
+# ---------------------------------------------------------------------------
+class EpochReportResponse(BaseModel):
+    epoch_id: int
+    champion_version: str
+    rqgm_backend: str
+    data_splits: dict = Field(default_factory=dict)
+    separation: dict = Field(default_factory=dict)
+    hack_ratio: dict = Field(default_factory=dict)
+    judge_agreement: dict = Field(default_factory=dict)
+    frontier: dict = Field(default_factory=dict)
+    memory: dict = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

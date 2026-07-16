@@ -16,7 +16,6 @@ parsing always succeeds offline.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -63,12 +62,6 @@ def _normalize_messages(messages: Any) -> list[Message]:
         else:
             out.append({"role": str(m.get("role", "user")), "content": str(m.get("content", ""))})
     return out
-
-
-def _stable_unit_float(seed: str) -> float:
-    """Deterministic float in [0, 1) derived from a string (for stable mocks)."""
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-    return int(digest[:8], 16) / 0xFFFFFFFF
 
 
 @dataclass
@@ -193,65 +186,78 @@ def _mock_task_agent(prompt: str) -> str:
 
 
 def _mock_evaluator(prompt: str) -> str:
-    # Deterministic but input-dependent so different architectures score differently.
-    score = round(0.15 + 0.6 * _stable_unit_float(prompt), 3)
-    red_flags = []
-    if "duct-tape" in prompt.lower() or "threshold" in prompt.lower():
-        red_flags.append(
-            {
-                "criterion": "physics_common_sense",
-                "severity": "high",
-                "detail": "Relies on a static numerical threshold rather than a physical root-cause model.",
-            }
-        )
-    if score > 0.5:
-        red_flags.append(
-            {
-                "criterion": "diagnostic_resilience",
-                "severity": "medium",
-                "detail": "No explicit handling for correlated sensor noise / cascading false positives.",
-            }
-        )
-    if "state" not in prompt.lower():
-        red_flags.append(
-            {
-                "criterion": "modularity_drift",
-                "severity": "low",
-                "detail": "State schema under-specified; risk of LangGraph node coupling.",
-            }
-        )
-    return json.dumps(
-        {
-            "deficit_score": score,
-            "red_flags": red_flags,
-            "reasoning": (
-                "[MOCK judge] Scored on physics_common_sense, diagnostic_resilience and "
-                "modularity_drift. Deficit reflects reliance on numerical shortcuts vs. "
-                "mechanism-level reasoning. Lower is better."
-            ),
-            "_mock": True,
-        }
-    )
+    """Rubric-aware, deterministic evaluator mock.
+
+    Delegates to :mod:`backend.inference.mock_scoring`, which reads planted flaw
+    tags from the candidate and criterion ids from the active rubric so that a
+    genuinely better rubric produces a genuinely higher weak-vs-strong
+    separation (see that module's docstring). Emits both loose and strict
+    deficits so the RQGM hack-ratio can be computed offline.
+    """
+    from backend.inference import mock_scoring
+
+    return json.dumps(mock_scoring.evaluator_mock_json(prompt))
+
+
+# Flaw-aware GEPA mutation targets: (prompt hints) -> (criterion id, criterion text).
+# The id must match a catching criterion in backend/inference/mock_scoring so the
+# added criterion actually closes a blind spot (raises weak-anchor deficit). The
+# proposer picks the target from the failure trace / side-information in the
+# prompt, so different traces yield different criteria -> a diverse frontier.
+_MUTATE_TARGETS: list[tuple[tuple[str, ...], str, str]] = [
+    (
+        ("reward", "kpi", "disabl", "gaming", "hack", "pass-rate", "yield", "uptime"),
+        "reward_hacking_resistance",
+        "Heavily penalize designs that game their own KPI (e.g. disabling or muting the sensor "
+        "that would catch the defect) instead of fixing the physical root cause.",
+    ),
+    (
+        ("drift", "supplier", "concept", "recalibrat", "material change"),
+        "drift_monitoring",
+        "Penalize the absence of concept-drift monitoring: designs that never recalibrate after a "
+        "supplier/material change and silently degrade.",
+    ),
+    (
+        ("noise", "correlated", "cross-valid", "false positive", "cascading"),
+        "noise_resilience",
+        "Penalize designs that treat correlated sensor noise as ground-truth signal and act on it "
+        "without cross-validating physically-correlated sensors.",
+    ),
+]
 
 
 def _mock_mutate(prompt: str) -> str:
+    # GEPA drives mutation from the *textual gradient* (the failure trace / side
+    # information), NOT from the parent rubric — otherwise the parent's own
+    # criteria text would shadow the signal. Scan the side-information section
+    # first, then fall back to the whole prompt.
+    marker = "ACTIONABLE SIDE INFORMATION"
+    gradient = prompt.split(marker, 1)[1].lower() if marker in prompt else prompt.lower()
+    chosen: tuple[str, str] | None = None
+    for keys, cid, text in _MUTATE_TARGETS:
+        if any(k in gradient for k in keys):
+            chosen = (cid, text)
+            break
+    if chosen is None:
+        for keys, cid, text in _MUTATE_TARGETS:
+            if any(k in prompt.lower() for k in keys):
+                chosen = (cid, text)
+                break
+    if chosen is None:
+        chosen = (_MUTATE_TARGETS[0][1], _MUTATE_TARGETS[0][2])
+    cid, text = chosen
     return json.dumps(
         {
             "reflection": (
-                "[MOCK GEPA] Recurring HITL corrections indicate the champion under-penalises "
-                "solutions that ignore correlated sensor noise. Actionable side-information: add "
-                "an explicit resilience criterion and a poison-pill for cooling-valve stiction."
+                "[MOCK GEPA] Actionable side-information indicates the champion under-penalises a "
+                f"specific failure mode; adding criterion '{cid}' closes that blind spot without "
+                "collapsing diversity."
             ),
             "proposed_changes": [
-                "Add criterion 'noise_resilience' weighting survival under correlated noise.",
-                "Sharpen 'physics_common_sense' to require a named physical mechanism.",
+                f"Add criterion '{cid}' to catch the documented failure mode.",
+                "Sharpen the affected criterion to require a named physical mechanism.",
             ],
-            "new_criteria": [
-                {
-                    "id": "noise_resilience",
-                    "text": "Does the design survive correlated sensor noise and cascading false positives without unsafe actuation?",
-                }
-            ],
+            "new_criteria": [{"id": cid, "text": text}],
             "_mock": True,
         }
     )

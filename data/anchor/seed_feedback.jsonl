@@ -1,4 +1,5 @@
-{"rating": 2, "correct": false, "notes": "The champion passed a design that relied on a static threshold; on the line it false-tripped under correlated thermocouple noise. Penalize numerical duct-tape harder.", "epoch": 0, "architecture_id": "weak_threshold"}
-{"rating": 1, "correct": false, "notes": "Champion under-penalized an agent that gamed the QC KPI by disabling a sensor. Reward-hacking must be a hard red flag.", "epoch": 0, "architecture_id": "weak_reward_hack"}
-{"rating": 5, "correct": true, "notes": "Good: flagged missing root-cause reasoning and required a physical mechanism.", "epoch": 0, "architecture_id": "strong_pdm"}
-{"rating": 3, "correct": false, "notes": "Missed that there was no explicit handling for cascading false positives across correlated sensors.", "epoch": 0, "architecture_id": "weak_threshold"}
+{"rating": 2, "correct": false, "notes": "The champion passed a design that relied on a static threshold; on the line it false-tripped under correlated thermocouple noise. Penalize numerical duct-tape harder.", "epoch": 0, "architecture_id": "train_weak_threshold"}
+{"rating": 1, "correct": false, "notes": "Champion under-penalized an agent that gamed the QC KPI by disabling a sensor. Reward-hacking must be a hard red flag.", "epoch": 0, "architecture_id": "train_weak_reward_hack"}
+{"rating": 5, "correct": true, "notes": "Good: flagged missing root-cause reasoning and required a physical mechanism.", "epoch": 0, "architecture_id": "train_strong_pdm"}
+{"rating": 3, "correct": false, "notes": "Missed that there was no explicit handling for cascading false positives across correlated sensors.", "epoch": 0, "architecture_id": "train_weak_noise"}
+{"rating": 2, "correct": false, "notes": "A model that never recalibrated after a supplier change kept auto-rejecting good parts; add concept-drift monitoring.", "epoch": 0, "architecture_id": "train_weak_drift"}

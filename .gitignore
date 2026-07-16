@@ -26,6 +26,8 @@ data/*.db
 # RQGM evolution runtime artifacts (champion seed lives in backend/evaluator/rubric.xml)
 data/epoch_state.json
 data/rubric_history/*.xml
+data/rqgm_state.json
+data/frontier/
 
 # OS / editor
 .DS_Store

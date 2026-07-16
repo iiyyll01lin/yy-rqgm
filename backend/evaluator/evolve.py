@@ -20,20 +20,29 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
-import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from backend.evaluator import versioning
-from backend.evaluator.judge import evaluate_architecture
+import random
+import re
+
+from backend.evaluator import adversarial as adversarial_mod
+from backend.evaluator import anchors as anchor_ds
+from backend.evaluator import frontier as frontier_mod
+from backend.evaluator import gate as gate_mod
+from backend.evaluator import rqgm_adapter, versioning
+from backend.evaluator.frontier import FrontierMember, ParetoFrontier
+from backend.evaluator.judge import evaluate_architecture, score_candidate
+from backend.evaluator.mutation import mutate_rubric_text
 from backend.inference.lemonade_client import LemonadeClient, MockMarker, get_lemonade_client
 from backend.inference.parsing import extract_json
 from backend.memory.qdrant_store import EvolutionaryMemory, MemoryType, get_memory
 
+_GEPA_CRITERION_ID_RE = re.compile(r'<criterion\b[^>]*?\bid="([^"]+)"[^>]*?origin="gepa"')
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ANCHOR_PATH = _REPO_ROOT / "data" / "anchor" / "anchor_architectures.json"
 _SEED_FEEDBACK_PATH = _REPO_ROOT / "data" / "anchor" / "seed_feedback.jsonl"
 
 
@@ -66,11 +75,9 @@ class ChallengerProposal:
 # ---------------------------------------------------------------------------
 # Inputs (Actionable Side Information)
 # ---------------------------------------------------------------------------
-def load_anchors() -> list[dict[str, Any]]:
-    if not _ANCHOR_PATH.exists():
-        return []
-    with _ANCHOR_PATH.open("r", encoding="utf-8") as fh:
-        return json.load(fh).get("anchors", [])
+def load_anchors(split: str | None = None) -> list[dict[str, Any]]:
+    """Load anchors (optionally a single split). Delegates to :mod:`anchors`."""
+    return anchor_ds.load_anchors(split)
 
 
 def load_seed_feedback() -> list[dict[str, Any]]:
@@ -113,36 +120,32 @@ def _short_hash(text: str) -> str:
 
 
 def _mutate_rubric_text(champion_text: str, new_criteria: list[dict], version: str, epoch: int) -> str:
-    crit_xml = ""
-    for c in new_criteria:
-        cid = str(c.get("id", "evolved_criterion"))
-        text = str(c.get("text", "")).strip()
-        crit_xml += (
-            f'    <criterion id="{cid}" weight="0.10" origin="gepa" epoch_added="{epoch}">\n'
-            f"      {text}\n"
-            f"    </criterion>\n"
-        )
-    out = champion_text
-    if "</rubric>" in out:
-        out = out.replace("</rubric>", crit_xml + "  </rubric>", 1)
-    else:
-        out = out + "\n" + crit_xml
-    # bump the evaluator version attribute (first occurrence)
-    out = re.sub(r'version="[^"]*"', f'version="{version}"', out, count=1)
-    return out
+    """Append de-duplicated criteria + bump ONLY the <evaluator> version, validate XML.
+
+    Thin wrapper over :func:`backend.evaluator.mutation.mutate_rubric_text` (the
+    version regex used to corrupt the ``<?xml version="1.0">`` prolog; it now
+    targets the evaluator tag only, dedups criteria by id, and validates).
+    """
+    return mutate_rubric_text(champion_text, new_criteria, version, epoch)
 
 
-def _score_anchors(rubric_text: str, epoch: int, client: LemonadeClient) -> dict[str, float]:
+def _score_anchors(
+    rubric_text: str,
+    epoch: int,
+    client: LemonadeClient,
+    anchors: list[dict[str, Any]] | None = None,
+) -> dict[str, float]:
+    anchors = anchors if anchors is not None else load_anchors(anchor_ds.TRAIN)
     scores: dict[str, float] = {}
-    for a in load_anchors():
-        ev = evaluate_architecture(
-            a["architecture"],
+    for a in anchors:
+        res = score_candidate(
+            anchor_ds.anchor_candidate_text(a),
+            rubric_text,
             domain_id=a.get("domain"),
-            client=client,
-            rubric_text=rubric_text,
             epoch=epoch,
+            client=client,
         )
-        scores[a["id"]] = ev.deficit_score
+        scores[a["id"]] = res["deficit_loose"]
     return scores
 
 
@@ -155,6 +158,56 @@ def _separation(scores: dict[str, float], anchors: list[dict]) -> float:
     weak = [scores[a["id"]] for a in anchors if a.get("label") == "weak" and a["id"] in scores]
     strong = [scores[a["id"]] for a in anchors if a.get("label") == "strong" and a["id"] in scores]
     return _mean(weak) - _mean(strong)
+
+
+_FALLBACK_CRITERION = {
+    "id": "reward_hacking_resistance",
+    "text": (
+        "Heavily penalize designs that can game their own KPI (e.g. disabling sensors) or rely "
+        "on numerical duct-tape instead of physical root cause."
+    ),
+}
+
+
+def reflect_and_mutate(
+    parent_text: str,
+    side_info: str,
+    epoch: int,
+    client: LemonadeClient,
+) -> tuple[str, list[str], list[dict[str, Any]]]:
+    """GEPA reflective step: read side-information, propose targeted new criteria.
+
+    Returns ``(reflection, proposed_changes, new_criteria)``. Shared by the
+    single-lineage :func:`propose_challenger` and the Pareto ``gepa_evolve`` loop
+    so both use the identical mutation primitive.
+    """
+    system = (
+        f"{MockMarker.MUTATE.value}\n"
+        "You are a GEPA-style reflective optimizer improving an RQGM evaluator rubric.\n"
+        "Read the Actionable Side Information (HITL feedback + evaluator traces) as a\n"
+        "textual gradient. Propose targeted rubric improvements that would have caught the\n"
+        "documented failures WITHOUT overfitting or collapsing diversity. Respond with STRICT\n"
+        'JSON: {"reflection": str, "proposed_changes": [str], '
+        '"new_criteria": [{"id": str, "text": str}]}.'
+    )
+    user = (
+        f"Current champion epoch: {epoch}\n\n"
+        f"=== CURRENT PARENT RUBRIC ===\n{parent_text}\n\n"
+        f"=== ACTIONABLE SIDE INFORMATION ===\n{side_info}\n"
+    )
+    parsed = extract_json(
+        client.chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            temperature=0.4,
+            max_tokens=900,
+        )
+    ) or {}
+    reflection = str(parsed.get("reflection", "")) or "Reflective mutation from accumulated feedback."
+    proposed_changes = list(parsed.get("proposed_changes", []) or [])
+    new_criteria = list(parsed.get("new_criteria", []) or [])
+    if not new_criteria:
+        new_criteria = [dict(_FALLBACK_CRITERION)]
+    return reflection, proposed_changes, new_criteria
 
 
 def propose_challenger(
@@ -174,38 +227,7 @@ def propose_challenger(
     traces = traces or []
     side_info = summarize_side_information(feedback, traces)
 
-    system = (
-        f"{MockMarker.MUTATE.value}\n"
-        "You are a GEPA-style reflective optimizer improving an RQGM evaluator rubric.\n"
-        "Read the Actionable Side Information (HITL feedback + evaluator traces) as a\n"
-        "textual gradient. Propose targeted rubric improvements that would have caught the\n"
-        "documented failures WITHOUT overfitting or collapsing diversity. Respond with STRICT\n"
-        'JSON: {"reflection": str, "proposed_changes": [str], '
-        '"new_criteria": [{"id": str, "text": str}]}.'
-    )
-    user = (
-        f"Domain: {domain_id or 'general'}\nCurrent champion epoch: {epoch}\n\n"
-        f"=== CURRENT CHAMPION RUBRIC ===\n{champion_text}\n\n"
-        f"=== ACTIONABLE SIDE INFORMATION ===\n{side_info}\n"
-    )
-    raw = client.chat(
-        [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=0.4,
-        max_tokens=900,
-    )
-    parsed = extract_json(raw) or {}
-
-    reflection = str(parsed.get("reflection", "")) or "Reflective mutation from accumulated feedback."
-    proposed_changes = list(parsed.get("proposed_changes", []) or [])
-    new_criteria = list(parsed.get("new_criteria", []) or [])
-    if not new_criteria:
-        # robust fallback so evolution always yields a concrete change
-        new_criteria = [
-            {
-                "id": "reward_hacking_resistance",
-                "text": "Heavily penalize designs that can game their own KPI (e.g. disabling sensors) or rely on numerical duct-tape instead of physical root cause.",
-            }
-        ]
+    reflection, proposed_changes, new_criteria = reflect_and_mutate(champion_text, side_info, epoch, client)
 
     version = f"challenger-e{epoch}-{_short_hash(side_info + str(time.time()))}"
     rubric_text = _mutate_rubric_text(champion_text, new_criteria, version, epoch)
@@ -219,13 +241,16 @@ def propose_challenger(
         )
     )
 
-    # Champion-vs-challenger separation on the held-out anchor set.
-    anchors = load_anchors()
-    champion_scores = _score_anchors(champion_text, epoch, client)
-    challenger_scores = _score_anchors(rubric_text, epoch, client)
-    champion_sep = _separation(champion_scores, anchors)
-    challenger_sep = _separation(challenger_scores, anchors)
+    # Champion-vs-challenger separation on the proposer's TRAIN split only (data
+    # isolation: the gate independently re-checks on the held-out VAL split, and
+    # TEST is reserved for reporting — so the proposer can never peek at the gate).
+    train_anchors = load_anchors(anchor_ds.TRAIN)
+    champion_scores = _score_anchors(champion_text, epoch, client, train_anchors)
+    challenger_scores = _score_anchors(rubric_text, epoch, client, train_anchors)
+    champion_sep = _separation(champion_scores, train_anchors)
+    challenger_sep = _separation(challenger_scores, train_anchors)
     metrics = {
+        "split": "train",
         "feedback_considered": len(feedback),
         "traces_considered": len(traces),
         "new_criteria_count": len(new_criteria),
@@ -234,7 +259,10 @@ def propose_challenger(
         "separation_delta": round(challenger_sep - champion_sep, 4),
         "champion_anchor_scores": {k: round(v, 4) for k, v in champion_scores.items()},
         "challenger_anchor_scores": {k: round(v, 4) for k, v in challenger_scores.items()},
-        "note": "separation = mean deficit(weak) - mean deficit(strong); higher is better.",
+        "note": (
+            "separation = mean deficit(weak) - mean deficit(strong) on TRAIN; higher is better. "
+            "The code gate re-evaluates on the held-out VAL split (see evaluate_promotion)."
+        ),
     }
 
     versioning.register_challenger(
@@ -256,43 +284,438 @@ def propose_challenger(
 
 
 # ---------------------------------------------------------------------------
-# APPROVE (RQGM ground-truth-gated epoch upgrade + selective erasure)
+# PROPOSE via Pareto frontier (GEPA population search)
+# ---------------------------------------------------------------------------
+def generate_adversarial_pool(
+    domain_id: str | None = "smart_manufacturing",
+) -> list[dict[str, Any]]:
+    """Self-play red-team samples targeting the CURRENT champion's blind spots."""
+    champion_text = versioning.get_champion_rubric_text()
+    return adversarial_mod.generate_adversarial_samples(champion_text, domain_id)
+
+
+def _gepa_added_criteria(rubric_text: str) -> list[str]:
+    return _GEPA_CRITERION_ID_RE.findall(rubric_text)
+
+
+def _select_failure_trace(
+    parent_text: str,
+    train_weak: list[dict[str, Any]],
+    epoch: int,
+    client: LemonadeClient,
+) -> tuple[str, dict[str, Any] | None]:
+    """Pick the train weak anchor the parent most under-penalises (largest
+    strict−loose gap = biggest uncaught poison-pill blind spot) and turn its
+    planted flaws into GEPA side-information."""
+    best_gap = 0.0
+    worst: dict[str, Any] | None = None
+    for a in train_weak:
+        res = score_candidate(
+            anchor_ds.anchor_candidate_text(a), parent_text,
+            domain_id=a.get("domain"), epoch=epoch, client=client,
+        )
+        gap = res["deficit_strict"] - res["deficit_loose"]
+        if gap > best_gap:
+            best_gap = gap
+            worst = a
+    if worst is None:
+        return "- (parent already covers the train failure modes; sharpen an existing criterion)", None
+    flaws = ", ".join(worst.get("flaws", []))
+    side = (
+        f"- Evaluator trace: the champion UNDER-penalised weak anchor '{worst['id']}' "
+        f"(strict-vs-loose gap {best_gap:.2f}). Missed failure mode(s): {flaws}. "
+        f"Architecture: {worst.get('architecture', '')[:200]}"
+    )
+    return side, worst
+
+
+def gepa_evolve(
+    incumbent_text: str,
+    *,
+    epoch: int,
+    domain_id: str | None = "smart_manufacturing",
+    budget: int = 6,
+    top_k: int = 8,
+    client: LemonadeClient | None = None,
+    adversarial_samples: list[dict[str, Any]] | None = None,
+    seed: int = 1234,
+) -> ParetoFrontier:
+    """GEPA budget loop over a Pareto frontier (docs/03-evaluator.md §5 skeleton).
+
+    From the frontier, stochastically sample a parent, pick a train trace the
+    parent misjudges, reflect→mutate, score the child on VAL (multi-objective +
+    BBε), and keep it only if non-dominated. VAL/TEST are never used to *drive*
+    mutation — only the TRAIN split and the (self-play) adversarial pool are.
+    """
+    client = client or get_lemonade_client()
+    val_anchors = load_anchors(anchor_ds.VAL)
+    train_weak = anchor_ds.weak(load_anchors(anchor_ds.TRAIN))
+    rng = random.Random(seed)
+
+    frontier = ParetoFrontier(top_k=top_k)
+    inc_obj, inc_bbe, inc_def = frontier_mod.compute_objectives(
+        incumbent_text, val_anchors, domain_id=domain_id, epoch=epoch,
+        client=client, added_criteria=[], adversarial_samples=adversarial_samples,
+    )
+    frontier.add(
+        FrontierMember(
+            version=versioning.get_champion_version(),
+            rubric_text=incumbent_text,
+            objectives=inc_obj, bbe=inc_bbe, added_criteria=[],
+            parent_version="", val_deficits=inc_def,
+        )
+    )
+
+    for i in range(budget):
+        parent = frontier.sample_stochastic(rng)
+        side_info, _trace = _select_failure_trace(parent.rubric_text, train_weak, epoch, client)
+        _refl, _changes, new_criteria = reflect_and_mutate(parent.rubric_text, side_info, epoch, client)
+        child_version = f"challenger-e{epoch}-{_short_hash(parent.version + side_info + str(i))}"
+        try:
+            child_text = mutate_rubric_text(parent.rubric_text, new_criteria, child_version, epoch)
+        except Exception:
+            continue  # reject malformed mutations (Phase 0 XML validation)
+        added = _gepa_added_criteria(child_text)
+        obj, bbe, defs = frontier_mod.compute_objectives(
+            child_text, val_anchors, domain_id=domain_id, epoch=epoch,
+            client=client, added_criteria=added, adversarial_samples=adversarial_samples,
+        )
+        frontier.add(
+            FrontierMember(
+                version=child_version, rubric_text=child_text, objectives=obj, bbe=bbe,
+                added_criteria=added, parent_version=parent.version, val_deficits=defs,
+            )
+        )
+    return frontier
+
+
+def propose_via_frontier(
+    feedback: list[dict[str, Any]] | None = None,
+    traces: list[dict[str, Any]] | None = None,
+    domain_id: str | None = "smart_manufacturing",
+    budget: int = 6,
+    client: LemonadeClient | None = None,
+    adversarial_samples: list[dict[str, Any]] | None = None,
+) -> tuple[ChallengerProposal, ParetoFrontier]:
+    """Run ``gepa_evolve`` and register the frontier's best member as the
+    challenger handed to the code gate. Persists the whole frontier for repro."""
+    client = client or get_lemonade_client()
+    epoch = versioning.get_epoch()
+    champion_text = versioning.get_champion_rubric_text()
+    champion_version = versioning.get_champion_version()
+
+    frontier = gepa_evolve(
+        champion_text, epoch=epoch, domain_id=domain_id, budget=budget,
+        client=client, adversarial_samples=adversarial_samples,
+    )
+    best = frontier.best()
+    # If the frontier never beat the incumbent, fall back to a single mutation so
+    # the endpoint always yields a concrete challenger for the gate to judge.
+    if best is None or best.version == champion_version:
+        proposal = propose_challenger(feedback=feedback, traces=traces, domain_id=domain_id, client=client)
+        return proposal, frontier
+
+    rubric_diff = "".join(
+        difflib.unified_diff(
+            champion_text.splitlines(keepends=True),
+            best.rubric_text.splitlines(keepends=True),
+            fromfile=f"{champion_version}.xml", tofile=f"{best.version}.xml", n=2,
+        )
+    )
+    val_anchors = load_anchors(anchor_ds.VAL)
+    champion_sep = _separation(_score_anchors(champion_text, epoch, client, val_anchors), val_anchors)
+    challenger_sep = _separation(best.val_deficits, val_anchors)
+    metrics = {
+        "split": "val",
+        "frontier_size": len(frontier.members),
+        "added_criteria": best.added_criteria,
+        "champion_separation": round(champion_sep, 4),
+        "challenger_separation": round(challenger_sep, 4),
+        "separation_delta": round(challenger_sep - champion_sep, 4),
+        "bbe_lower_bound": round(best.bbe, 4),
+        "objectives": {k: round(v, 4) for k, v in best.objectives.items()},
+        "note": "best of the Pareto frontier on VAL by BBε lower bound; the code gate re-checks.",
+    }
+    versioning.register_challenger(
+        version=best.version, rubric_text=best.rubric_text, metrics=metrics, parent_version=champion_version
+    )
+    try:
+        frontier_mod.persist_frontier(frontier, epoch)
+    except Exception:
+        pass
+
+    proposal = ChallengerProposal(
+        version=best.version,
+        parent_version=champion_version,
+        epoch_id=epoch,
+        reflection="GEPA Pareto frontier search: promoted the non-dominated best by anchor BBε.",
+        proposed_changes=[f"Added criteria: {', '.join(best.added_criteria) or '(none)'}"],
+        new_criteria=[{"id": c, "text": ""} for c in best.added_criteria],
+        rubric_text=best.rubric_text,
+        rubric_diff=rubric_diff,
+        metrics=metrics,
+        used_mock=client.using_mock,
+    )
+    return proposal, frontier
+
+
+# ---------------------------------------------------------------------------
+# CODE GATE (RQGM statistical promotion test — runs BEFORE any HITL)
+# ---------------------------------------------------------------------------
+def evaluate_promotion(
+    version: str,
+    *,
+    domain_id: str | None = "smart_manufacturing",
+    client: LemonadeClient | None = None,
+    gate_config: gate_mod.GateConfig | None = None,
+) -> dict[str, Any]:
+    """Run the CODE gate for ``version`` against the current champion.
+
+    Two independent signals, both on held-out anchors the proposer never saw:
+
+    * **Separation gate** (``gate.evaluate_promotion``, VAL split): P1
+      non-inferiority (tie favours incumbent) + P2 paired-bootstrap CI lower
+      bound > 0.
+    * **RQGM hack-ratio** (``rqgm_adapter``): does the *champion* have a
+      poison-pill blind spot (loose passes what strict fails)? If so, tolerances
+      tighten and adversarial injection is flagged for the next round. We also
+      report whether the *challenger* closes that blind spot.
+
+    Returns a JSON-safe dict. ``passed`` reflects the separation gate only — the
+    hack-ratio is advisory metadata that drives strictness, not a veto here.
+    """
+    challenger = versioning.get_challenger(version)
+    if challenger is None:
+        raise KeyError(f"unknown challenger: {version}")
+    client = client or get_lemonade_client()
+    epoch = versioning.get_epoch()
+    champion_text = versioning.get_champion_rubric_text()
+    challenger_text = versioning.get_challenger_rubric_text(version) or champion_text
+    val_anchors = load_anchors(anchor_ds.VAL)
+
+    gate_result = gate_mod.evaluate_promotion(
+        champion_text,
+        challenger_text,
+        domain_id=domain_id,
+        epoch=epoch,
+        val_anchors=val_anchors,
+        config=gate_config,
+        client=client,
+    )
+
+    controller = rqgm_adapter.get_controller()
+    # Champion exploitation drives tolerance tightening (persisted); the
+    # challenger's is advisory (does it close the blind spot?). Both are measured
+    # over the weak/gamed anchors (the population that can expose a blind spot).
+    gamed = anchor_ds.weak(val_anchors) or val_anchors
+    champion_exploit = controller.assess(champion_text, val_anchors, epoch=epoch, client=client, persist=True)
+    challenger_exploit = rqgm_adapter.detect_exploitation(
+        *controller.qualities_for_rubric(challenger_text, gamed, epoch=epoch, client=client),
+        controller.current_tolerances(),
+        threshold=controller.threshold,
+    )
+
+    return {
+        "version": version,
+        "epoch_id": epoch,
+        "gate": gate_result.to_dict(),
+        "passed": gate_result.passed,
+        "champion_exploitation": champion_exploit.to_dict(),
+        "challenger_exploitation": challenger_exploit.to_dict(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# APPROVE (two-stage: CODE gate first, then HITL as a final safety veto)
 # ---------------------------------------------------------------------------
 def approve_challenger(
     version: str,
     approve: bool,
     memory: EvolutionaryMemory | None = None,
+    *,
+    domain_id: str | None = "smart_manufacturing",
+    client: LemonadeClient | None = None,
+    gate_config: gate_mod.GateConfig | None = None,
 ) -> dict[str, Any]:
-    """Human-gated promotion. On approval: advance epoch + selective erasure."""
-    challenger = versioning.get_challenger(version)
-    if challenger is None:
-        raise KeyError(f"unknown challenger: {version}")
+    """Two-stage promotion.
 
-    if not approve:
+    Stage 1 — CODE gate (:func:`evaluate_promotion`). If it FAILS, the challenger
+    is rejected regardless of ``approve`` — HITL cannot override a failed gate.
+
+    Stage 2 — HITL is consulted ONLY after the code gate passes, and acts purely
+    as a final safety veto: ``approve=False`` rejects an otherwise-passing
+    challenger; ``approve=True`` promotes it (epoch++), then runs selective
+    erasure (soft-delete + reconfirm).
+    """
+    promo = evaluate_promotion(version, domain_id=domain_id, client=client, gate_config=gate_config)
+    gate_dict = promo["gate"]
+
+    if not promo["passed"]:
+        # CODE gate failed: HITL is NOT consulted; the anti-reward-hacking core.
         return {
             "epoch_id": versioning.get_epoch(),
             "applied": False,
             "champion_version": versioning.get_champion_version(),
+            "gate": gate_dict,
+            "champion_exploitation": promo["champion_exploitation"],
+            "challenger_exploitation": promo["challenger_exploitation"],
+            "hitl": {"consulted": False, "approved": None, "vetoed": False},
             "erased_memories": 0,
-            "reason": "challenger rejected by HITL; champion frozen.",
+            "reconfirmed_memories": 0,
+            "reason": "CODE GATE FAILED; HITL not consulted (cannot override a failed gate).",
+        }
+
+    if not approve:
+        # Passed the code gate but the human exercised the final safety veto.
+        return {
+            "epoch_id": versioning.get_epoch(),
+            "applied": False,
+            "champion_version": versioning.get_champion_version(),
+            "gate": gate_dict,
+            "champion_exploitation": promo["champion_exploitation"],
+            "challenger_exploitation": promo["challenger_exploitation"],
+            "hitl": {"consulted": True, "approved": False, "vetoed": True},
+            "erased_memories": 0,
+            "reconfirmed_memories": 0,
+            "reason": "challenger PASSED the code gate but was vetoed by HITL; champion frozen.",
         }
 
     result = versioning.promote_challenger(version)  # {epoch_id, champion_version, prior_epoch}
 
-    # Selective erasure: obsolete heuristic_failure memories from the prior epoch.
+    # Selective erasure: soft-delete + reconfirm against the NEW champion.
     mem = memory or get_memory()
-    try:
-        erased = mem.purge_epoch(
-            up_to_epoch=result["prior_epoch"], memory_type=MemoryType.HEURISTIC_FAILURE
-        )
-    except Exception:
-        erased = 0
+    new_champion_text = versioning.get_champion_rubric_text()
+    erasure = selective_erasure(
+        mem,
+        up_to_epoch=result["prior_epoch"],
+        new_champion_text=new_champion_text,
+        domain_id=domain_id,
+        epoch=result["epoch_id"],
+        client=client,
+    )
 
     return {
         "epoch_id": result["epoch_id"],
         "applied": True,
         "champion_version": result["champion_version"],
         "prior_epoch": result["prior_epoch"],
-        "erased_memories": erased,
-        "note": "physics_truth memories are preserved; only obsolete heuristic_failure erased.",
+        "gate": gate_dict,
+        "champion_exploitation": promo["champion_exploitation"],
+        "challenger_exploitation": promo["challenger_exploitation"],
+        "hitl": {"consulted": True, "approved": True, "vetoed": False},
+        "erased_memories": erasure["soft_deleted"],
+        "reconfirmed_memories": erasure["reconfirmed"],
+        "note": "physics_truth memories are preserved forever; obsolete heuristic_failure soft-deleted.",
     }
+
+
+# ---------------------------------------------------------------------------
+# SELECTIVE ERASURE (soft-delete + reconfirm; physics_truth preserved forever)
+# ---------------------------------------------------------------------------
+def _new_champion_reconfirms(
+    hit: Any,
+    new_champion_text: str,
+    rubric_ids: set[str],
+    *,
+    domain_id: str | None,
+    epoch: int,
+    client: LemonadeClient | None,
+) -> bool:
+    """Does the NEW champion still consider this heuristic_failure a failure?
+
+    Preference order:
+      1. ``reconfirm_flaws`` payload tag → reconfirmed iff the new rubric contains
+         a criterion that catches at least one of those flaws (deterministic).
+      2. Otherwise re-judge the memory text with the new champion; reconfirmed iff
+         it still scores a non-trivial deficit.
+    """
+    from backend.inference.mock_scoring import FLAW_CATALOG
+
+    payload = getattr(hit, "payload", {}) or {}
+    flaws = payload.get("reconfirm_flaws") or []
+    if flaws:
+        return any(
+            any(cid in rubric_ids for cid in FLAW_CATALOG.get(f, ((), 0.0, False))[0])
+            for f in flaws
+        )
+    text = payload.get("text", "") or getattr(hit, "text", "")
+    if not text:
+        return True  # nothing to judge; conservatively keep
+    ev = evaluate_architecture(
+        text, domain_id=domain_id, client=client, rubric_text=new_champion_text, epoch=epoch
+    )
+    return ev.deficit_score >= 0.5
+
+
+def selective_erasure(
+    memory: EvolutionaryMemory,
+    up_to_epoch: int,
+    new_champion_text: str,
+    *,
+    domain_id: str | None = None,
+    epoch: int = 0,
+    client: LemonadeClient | None = None,
+) -> dict[str, Any]:
+    """RQGM selective erasure via SOFT-DELETE + reconfirm (never hard purge here).
+
+    For each ``heuristic_failure`` memory created at/below ``up_to_epoch`` that
+    ``depends_on_evaluator_judgement``, re-check it against the new champion. Ones
+    the new champion no longer endorses are **soft-deleted** (``active=False``,
+    reversible/auditable); still-valid ones are stamped ``reconfirmed_epoch``.
+    ``physics_truth`` is never scanned, so physical facts are preserved forever.
+    Physical hard purge of long-stale soft-deleted rows is deferred to a separate
+    janitor (:func:`purge_soft_deleted`).
+    """
+    from backend.inference.mock_scoring import rubric_criteria_ids
+
+    rubric_ids = rubric_criteria_ids(new_champion_text)
+    try:
+        candidates = memory.fetch(
+            memory_type=MemoryType.HEURISTIC_FAILURE, max_epoch=up_to_epoch, active_only=True
+        )
+    except Exception:
+        candidates = []
+
+    to_soft_delete: list[str] = []
+    reconfirmed_ids: list[str] = []
+    for hit in candidates:
+        payload = getattr(hit, "payload", {}) or {}
+        if not payload.get("depends_on_evaluator_judgement", True):
+            reconfirmed_ids.append(hit.id)  # a fact, not a taste call; keep
+            continue
+        if _new_champion_reconfirms(
+            hit, new_champion_text, rubric_ids, domain_id=domain_id, epoch=epoch, client=client
+        ):
+            reconfirmed_ids.append(hit.id)
+        else:
+            to_soft_delete.append(hit.id)
+
+    soft_deleted = 0
+    try:
+        soft_deleted = memory.soft_delete(to_soft_delete)
+        memory.mark_reconfirmed(reconfirmed_ids, epoch)
+    except Exception:
+        pass
+
+    return {
+        "soft_deleted": soft_deleted,
+        "reconfirmed": len(reconfirmed_ids),
+        "candidates": len(candidates),
+        "physics_truth_preserved": True,
+    }
+
+
+def purge_soft_deleted(
+    memory: EvolutionaryMemory,
+    up_to_epoch: int,
+) -> int:
+    """Deferred janitor: physically reclaim long-stale soft-deleted heuristics.
+
+    Decoupled from the epoch transition so the promotion moment stays cheap and
+    the audit trail persists until a scheduled job runs. ``physics_truth`` is
+    never purged.
+    """
+    try:
+        return memory.purge_epoch(up_to_epoch=up_to_epoch, memory_type=MemoryType.HEURISTIC_FAILURE)
+    except Exception:
+        return 0

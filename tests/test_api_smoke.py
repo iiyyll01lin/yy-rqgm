@@ -20,6 +20,23 @@ def test_health_and_root(client):
     assert h["status"] == "ok"
     assert h["inference"]["using_mock"] is True
     assert client.get("/").json()["name"] == "AgentForge"
+    # Phase 4: /health exposes a compact evaluator summary.
+    ev = h["evaluator"]
+    assert "val_separation" in ev and "test_separation" in ev
+    assert "hack_ratio" in ev and "exploitation_detected" in ev
+    assert "val_judge_accuracy" in ev
+    assert ev["rqgm_backend"] in {"rqgm", "local-fallback"}
+
+
+def test_admin_report_endpoint(client):
+    r = client.get("/api/admin/report").json()
+    assert set(r["separation"].keys()) == {"val", "test"}
+    assert r["separation"]["val"]["separation"] >= 0
+    assert "mean_hack_ratio" in r["hack_ratio"]
+    assert "accuracy" in r["judge_agreement"]["val"]
+    assert "cohen_kappa" in r["judge_agreement"]["test"]
+    assert r["data_splits"]["test"]["total"] == 5
+    assert r["rqgm_backend"] in {"rqgm", "local-fallback"}
 
 
 def test_tiers_have_class_key(client):
@@ -134,9 +151,35 @@ def test_epoch_propose_then_approve_advances_epoch(client):
     prop = client.post("/api/admin/epoch/propose").json()
     assert prop["challenger_id"].startswith("challenger-")
     assert "metrics" in prop and "rubric_diff" in prop
+    assert "frontier" in prop  # Phase 2: propose returns the Pareto frontier
     appr = client.post("/api/admin/epoch/approve", json={"approve": True}).json()
+    # Two-stage gate: code gate must pass, and it is surfaced in the response.
+    assert appr["gate"]["passed"] is True
+    assert appr["gate"]["challenger_separation"] >= appr["gate"]["champion_separation"]
+    assert appr["hitl"]["consulted"] is True
     assert appr["applied"] is True
     assert appr["epoch_id"] == before + 1
+
+
+def test_epoch_approve_rejects_worse_challenger_before_hitl(client):
+    """Code gate blocks a strictly-worse challenger even if a human approves."""
+    from backend.evaluator import versioning
+
+    versioning.reset()
+    champion = versioning.get_champion_rubric_text()
+    worse = champion.replace(
+        '<criterion id="safety_autonomy" weight="0.15">',
+        '<criterion id="_removed" weight="0.15">',
+    )
+    versioning.register_challenger(version="challenger-worse-api", rubric_text=worse, parent_version="champion-0")
+    # Seed the admin module's pending pointer directly to the worse challenger.
+    from backend.app.api import admin as admin_mod
+
+    admin_mod._pending_challenger = "challenger-worse-api"
+    appr = client.post("/api/admin/epoch/approve", json={"approve": True}).json()
+    assert appr["applied"] is False
+    assert appr["gate"]["passed"] is False
+    assert appr["hitl"]["consulted"] is False
 
 
 def test_orchestrate_hitl_interrupt_and_resume(client):

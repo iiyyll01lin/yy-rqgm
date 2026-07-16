@@ -157,3 +157,29 @@ def reset() -> None:
     """Reset epoch state (test helper). Removes the state file."""
     if STATE_PATH.exists():
         STATE_PATH.unlink()
+
+
+def reset_to_champion0(*, purge_history: bool = True) -> dict[str, Any]:
+    """Reset runtime evolution state back to a clean ``champion-0`` baseline.
+
+    Phase 0 of the RQGM fidelity rebuild: the shipped ``data/epoch_state.json``
+    was polluted (a strictly-worse challenger had been promoted, a criterion was
+    duplicated, and a rubric had a corrupted XML prolog). This wipes the runtime
+    state file and (optionally) the archived challenger rubrics so the new gated
+    loop regenerates honest state from the immutable ``rubric.xml`` seed.
+
+    The seed champion (``backend/evaluator/rubric.xml``) is never touched.
+    """
+    removed_history: list[str] = []
+    if STATE_PATH.exists():
+        STATE_PATH.unlink()
+    if purge_history and _HISTORY_DIR.exists():
+        for path in _HISTORY_DIR.glob("*.xml"):
+            removed_history.append(path.name)
+            path.unlink()
+    return {
+        "champion_version": "champion-0",
+        "epoch_id": 0,
+        "removed_state_file": True,
+        "removed_history": removed_history,
+    }
