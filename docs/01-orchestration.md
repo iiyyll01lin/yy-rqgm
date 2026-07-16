@@ -190,7 +190,7 @@ flowchart TD
         direction TB
         C1["收集 HITL feedback + trace"] --> C2["GEPA reflective mutation<br/>+ self-play red-team"]
         C2 --> C3["Pareto frontier population search<br/>(top-K 非 dominated, 落地 data/frontier)"]
-        C3 --> C4["CODE gate @ held-out val<br/>P1 非劣 + P2 bootstrap + hack-ratio"]
+        C3 --> C4["CODE gate @ held-out val<br/>P1 非劣 + P2 Bayesian 後驗/MDE + hack-ratio"]
         C4 --> C5["HITL veto (安全鎖, 只能否決)"]
     end
     H4 -->|"feedback = anchor"| C1
@@ -232,7 +232,7 @@ flowchart LR
 epoch 生命週期：
 
 1. **Epoch 內（frozen）**：hot path 所有判斷都由**同一個** frozen evaluator 產生，並蓋上 `epoch_id`。此期間 cold path 可以盡情 GEPA mutation，但產出的 challenger **不上線**。
-2. **Epoch 邊界（gating）**：challenger 必須先過一道 **code 統計 gate**——在 **held-out labeled anchor（`val` split）** 上以 P1 非劣（平手偏袒現任）+ P2 paired-bootstrap 下界 > 0 勝過 incumbent，並用 strict/loose **hack-ratio**（官方 `rqgm` 套件）偵測 reward hacking。通過後 HITL 才被諮詢，且**只能否決、不能覆寫失敗的 gate**（見 [`03-evaluator.md`](./03-evaluator.md) §6）。
+2. **Epoch 邊界（gating）**：challenger（GEPA 在 `dev` 選擇split 上選出的 frontier best）必須先過一道 **code 統計 gate**——在 **held-out labeled anchor（`val` split）** 上以 P1 非劣（平手偏袒現任）+ **P2 Bayesian Beta-Binomial 後驗 `P(Δsep>0)≥0.95` 且效果 `Δsep≥MDE`** 勝過 incumbent，並用 strict/loose **hack-ratio**（官方 `rqgm` 套件）偵測 reward hacking。通過後 HITL 才被諮詢，且**只能否決、不能覆寫失敗的 gate**（見 [`03-evaluator.md`](./03-evaluator.md) §6）。
 3. **升級後（selective erasure）**：對「其效用值依賴被替換 evaluator」的 `heuristic_failure` 記錄做 **soft-delete + 新 champion reconfirm**（靠 `created_at_epoch` 過濾）——保留仍有效者、軟刪不再確認者、延後硬 purge；`physics_truth` 永久保留。**非全量清空**——這是與「每次重訓歸零」最關鍵的差異。
 
 > 為什麼 evaluator 必須在進化 harness *之外*：若讓「解法」與「評分者」在同一迴圈內共同進化，系統會學會 reward hacking（生成專門討好當前評分者的解法）。把 evaluator 凍結在 epoch 內、且升級要過*外部* anchor 上的 **code gate**（proposer 只看 `train`、碰不到 `val`/`test`），就從結構上斷了這條捷徑。完整論證見 [`03-evaluator.md`](./03-evaluator.md) §7。

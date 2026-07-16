@@ -35,7 +35,7 @@ AgentForge 是一套跑在 AMD open-source ROCm 技術棧上的「Heuristic AI A
 
 1. **雙閘門（Dual-Gate）**：`Static Hardware Gatekeeper`（deterministic 物理，永不進化）+ `RQGM Evaluator`（fuzzy 品味，受控進化）。物理錯誤零容忍；品味判斷才允許演化。
 2. **Hot / Cold Path 分離**：使用者互動（wizard、選型、匯出）走**同步 hot path**，毫秒～秒級；昂貴的自我進化（GEPA mutation、population search、DGM-style archive）走**非同步 cold path**，小時～天級。兩者用 **epoch** 這個時間邊界縫合。
-3. **Epoch Freeze + 兩段式 Gating**：evaluator 在一個 epoch 內**凍結**（stationary utility，per-epoch 自我改進保證才成立）；epoch 邊界才允許 challenger 取代 incumbent，且必須先過一道 **code 統計 gate**（held-out labeled anchor `val` 上 P1 非劣 + P2 paired-bootstrap 下界 > 0，平手偏袒現任），**HITL 只能否決、不能覆寫失敗的 gate**。升級後做 **selective erasure（soft-delete + reconfirm）**，只軟刪「依賴被替換 evaluator」的 `heuristic_failure` 記錄，`physics_truth` 永久保留。
+3. **Epoch Freeze + 兩段式 Gating**：evaluator 在一個 epoch 內**凍結**（stationary utility，per-epoch 自我改進保證才成立）；epoch 邊界才允許 challenger 取代 incumbent，且必須先過一道 **code 統計 gate**（held-out labeled anchor `val` 上 P1 非劣 + **P2 Bayesian Beta-Binomial 後驗 `P(Δsep>0)≥0.95` 且 `Δsep≥MDE`**，平手偏袒現任），**HITL 只能否決、不能覆寫失敗的 gate**。升級後做 **selective erasure（soft-delete + reconfirm）**，只軟刪「依賴被替換 evaluator」的 `heuristic_failure` 記錄，`physics_truth` 永久保留。
 4. **AMD Memory 是護城河**：agent 自我進化（MCTS/population search + 巨量 persistent negative-result log）的瓶頸不是算力而是**記憶體容量 × 頻寬**。MI300X 的 **192 GB HBM3 / 5.3 TB/s** 讓「一張卡裝下大 population + 長記憶」從不可能變日常——這是把 DGM 那種 *~$22,000 / 80 iteration* 的天價迴圈壓進可負擔 TCO 的關鍵。
 
 **為什麼是 AMD、為什麼全開源**：本平台的 evaluator 要維護一份**持續膨脹的 negative-result 記憶**（「這些解法為什麼失敗」）。這份記憶越大、agent 越不會重蹈覆轍，但也越吃 VRAM。NVIDIA 80 GB 級別的卡會逼你在「population 大小」與「記憶長度」之間做痛苦取捨；MI300X 的 192 GB 直接讓這個取捨消失。搭配 vLLM ROCm 的 **PagedAttention + Prefix Caching**，population 分支間共享的長 prefix 只存一份，KV footprint 可省 **80%+**（詳見 [`02-sizing-math.md`](./02-sizing-math.md)）。整條技術棧（LangGraph、vLLM ROCm、llama.cpp HIP、Lemonade、GAIA、Qdrant、Neo4j、AMD Quark）皆為 open-source，教育與商用皆可自由複製。
@@ -52,7 +52,7 @@ AgentForge 是一套跑在 AMD open-source ROCm 技術棧上的「Heuristic AI A
 | II | **只有 fuzzy 的 domain 判斷才進化** | 品味沒有 closed-form，需要從失敗中學 | `RQGM Evaluator` + GEPA（見 [`03-evaluator.md`](./03-evaluator.md)） |
 | III | **Evaluator 在 epoch 內凍結** | stationary utility 才讓 per-epoch 自我改進保證成立 | epoch freeze（見 [`01-orchestration.md`](./01-orchestration.md)） |
 | IV | **Evaluator 必須在進化 harness 之外** | 同時進化「解法」與「評分者」= reward hacking 溫床 | 分離 harness loop（見 [`03-evaluator.md`](./03-evaluator.md)） |
-| V | **升級需通過 held-out ground-truth** | 避免 evaluator 自我感覺良好 | **code 統計 gate**（held-out `val`：P1 非劣 + P2 bootstrap）+ HITL veto（見 [`03-evaluator.md`](./03-evaluator.md) §6） |
+| V | **升級需通過 held-out ground-truth** | 避免 evaluator 自我感覺良好 | **code 統計 gate**（held-out `val`：P1 非劣 + P2 Bayesian 後驗/MDE）+ HITL veto（見 [`03-evaluator.md`](./03-evaluator.md) §6） |
 | VI | **100% open-source、ROCm-first** | 教育/中小企業可複製；無供應商鎖定 | 全棧開源（見 [`04-stack-export.md`](./04-stack-export.md)） |
 | VII | **模擬要誠實標示** | Tier 4（MI300X）無實機，靠公式模擬 | UI 明示 "SIMULATED"（見 [`04-stack-export.md`](./04-stack-export.md)） |
 
@@ -72,7 +72,7 @@ flowchart TD
     Upsell --> Export
     Export --> Feedback[["HITL Feedback<br/>= Ground-Truth Anchor"]]
     Feedback -.->|"cold path, async"| Loop["GEPA Pareto-frontier search<br/>+ self-play red-team"]
-    Loop -.->|"frontier best"| CodeGate{"CODE gate<br/>val: P1 非劣 + P2 bootstrap<br/>hack-ratio (rqgm)"}
+    Loop -.->|"frontier best · dev BBε"| CodeGate{"CODE gate<br/>val: P1 非劣 + P2 Bayesian 後驗/MDE<br/>hack-ratio (rqgm)"}
     CodeGate -.->|"fail → 回 frontier"| Loop
     CodeGate -.->|"pass"| EpochGate{{"HITL veto (只能否決)"}}
     EpochGate -.->|"approve → new epoch"| Judge
@@ -131,7 +131,7 @@ flowchart TD
 | **Numerical Duct-Tape** | 反面教材：用調參/濾波/clamp 把症狀壓下去，卻沒解決物理 root cause。Evaluator 的頭號打擊目標。 |
 | **Epoch** | 進化的時間單位。epoch 內 evaluator 凍結（utility stationary）；epoch 邊界才允許升級與 selective erasure。 |
 | **Selective Erasure** | epoch 升級時，對「其效用值依賴被替換 evaluator」的 `heuristic_failure` 記錄做 **soft-delete + 新 champion reconfirm**（軟刪不再確認者、延後硬 purge），保留仍有效者；`physics_truth` 永不動。非全量清空。 |
-| **Ground-Truth Anchor** | 升級 gating 的裁判。現為一份**真的 held-out human-labeled set**（22 個標註架構，拆 `train`/`val`/`test`）：code gate 只在 `val` 上判 P1/P2。HITL feedback 另餵給 GEPA 當 side-information，並在 gate 後保留否決權。 |
+| **Ground-Truth Anchor** | 升級 gating 的裁判。現為一份**真的 held-out human-labeled set**（48 個標註架構，四路拆 `train`/`dev`/`val`/`test`）：GEPA 只讀 `train`、frontier 選在 `dev`、code gate 只在 `val` 上判 P1/P2、`test` 純報告。HITL feedback 另餵給 GEPA 當 side-information，並在 gate 後保留否決權。 |
 | **Hot / Cold Path** | Hot = 同步、使用者可見、便宜；Cold = 非同步、離線、昂貴（進化）。 |
 | **HITL** | *Human-in-the-Loop*：LangGraph `interrupt()` + checkpointer 實作的人工檢查點；本平台用它同時當 anchor 與 epoch 升級的核准閘。 |
 | **KV Cache** | 自回歸 decode 時快取的 keys/values；`KV_per_token = 2 × n_layers × n_kv_heads × head_dim × bytes_kv`。population search 時它會爆炸（見 A2）。 |
@@ -164,12 +164,12 @@ flowchart LR
 - **驗收**：注入 poison pill 後，evaluator 在 HITL 修正下能於下一 epoch 抓到先前漏掉的 Red Flag，且 selective erasure 正確運作。
 
 ### P2 — Full Cold-Path RQGM（完整冷路徑進化）
-- **交付**：**Pareto frontier population search**（EvoSkill 風格；top-K 非 dominated，frontier 持久化到 `data/frontier/` 取代重量級 DGM archive）+ **統計化 epoch gating**（held-out labeled anchor `val` 上 P1/P2 code gate，HITL 只能否決）。
+- **交付**：**Pareto frontier population search**（EvoSkill 風格；top-K 非 dominated、父代 Thompson 取樣、在 `dev` 選擇split 選 best，frontier 持久化到 `data/frontier/` 取代重量級 DGM archive）+ **統計化 epoch gating**（held-out labeled anchor `val` 上 P1 非劣 + P2 Bayesian 後驗/MDE code gate，HITL 只能否決）。
 - **加上**：vLLM ROCm PagedAttention + Prefix Caching 撐起大 population；MI300X 192 GB 撐起長記憶（T4 以數學模擬 + 縮小 population 驗證保真度）。
 - **價值**：真正的 controlled utility evolution——受控、可稽核、抗 reward-hacking 的自我進化。
 - **驗收**：challenger evaluator 能在 held-out `val` anchor 上統計勝出（P1/P2）並安全升級；prefix-share 高的工作負載上 KV 節省 80%+（T4 為 SIMULATED）。
 
-> **實作現況（docs ↔ code reconciled）**：P0、P1 已落地，**P2 的統計化 gating 與 Pareto population 搜尋亦已實作**——`gepa_evolve` 維護 Pareto frontier（`sep::<criterion>` + `parsimony` + `adversarial` 多目標）、code gate 在 held-out `val` 跑 P1/P2、strict/loose **hack-ratio** 接官方 `rqgm` 套件並自動收緊 tolerance、selective erasure 改 **soft-delete + reconfirm**、**judge panel + accuracy/κ 校準**、**hybrid-search 記憶回撈** 皆已接上。**仍為 optional / 未實作**：frontier 節點的 MCTS/Thompson、multi-agent debate。**仍為近似 / 需硬體**：offline judge 是 deterministic rubric-aware **mock**（真評分需 Lemonade/vLLM），prefix-caching 80%+ 節省與 MI300X 大 population 屬 **T4 SIMULATED**。
+> **實作現況（docs ↔ code reconciled）**：P0、P1 已落地，**P2 的統計化 gating 與 Pareto population 搜尋亦已實作**——`gepa_evolve` 維護 Pareto frontier（`sep::<criterion>` + `parsimony` + `adversarial` 多目標、**父代 Thompson 取樣**、在 `dev` 選擇split 選 best）、code gate 在 held-out `val` 跑 **P1 非劣 + P2 Bayesian Beta-Binomial 後驗/MDE**、strict/loose **hack-ratio** 接官方 `rqgm` 套件並自動收緊 tolerance、報告含 **over-acceptance / over-optimization gap / provenance**、selective erasure 改 **soft-delete + reconfirm**、**judge panel + accuracy/κ 校準**、**hybrid-search 記憶回撈** 皆已接上。**仍為 optional / 未實作**：frontier 節點的 **MCTS**、multi-agent debate（**Thompson-over-frontier 已實作**）。**仍為近似 / 需硬體**：offline judge 是 deterministic rubric-aware **mock**（真評分需 Lemonade/vLLM），prefix-caching 80%+ 節省與 MI300X 大 population 屬 **T4 SIMULATED**。
 
 ---
 

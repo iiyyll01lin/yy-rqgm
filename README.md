@@ -43,13 +43,13 @@ AgentForge 的可信度地基是**把「物理」和「判斷」實體分離**�
 
 - **🔥 Hot path（同步、即時）**：4-step wizard → Gatekeeper → 凍結的 champion evaluator → 匯出 PoC。
 - **❄ Cold path（非同步、離線）**：HITL 回饋 + traces → **GEPA Pareto-frontier population search**
-  （`per-criterion` + `parsimony` + `adversarial` 多目標、top-K 非 dominated，落地 `data/frontier/`）＋ **self-play 紅隊** →
-  frontier best（anchor BBε）→ **兩段式晉升**：**CODE gate 先行**（held-out `val` 上 P1 非劣 + P2 paired-bootstrap 下界 > 0，
-  平手偏袒現任；strict/loose **hack-ratio** 接官方 `rqgm` 套件，exploitation 時自動收緊 tolerance）→ **HITL 只能否決**（不能覆寫失敗 gate）→
+  （`per-criterion` + `parsimony` + `adversarial` 多目標、top-K 非 dominated、**父代以 Thompson 取樣**，落地 `data/frontier/`）＋ **self-play 紅隊** →
+  frontier best（**`dev` 選擇split 的 BBε 下界**）→ **兩段式晉升**：**CODE gate 先行**（held-out `val` 上 P1 非劣 +
+  **P2 Bayesian Beta-Binomial 後驗 `P(Δsep>0) ≥ 0.95` 且效果 `Δsep ≥ MDE`**，平手偏袒現任；strict/loose **hack-ratio** 接官方 `rqgm` 套件，exploitation 時自動收緊 tolerance）→ **HITL 只能否決**（不能覆寫失敗 gate）→
   `epoch++` 晉升 champion → **selective erasure**（soft-delete + 新 champion reconfirm；`physics_truth` 永久保留）。
   judge 判斷前用 **hybrid-search** 從 Qdrant 回撈記憶注入 prompt。
 
-這就是 **RQGM 的 epoch 結構 ＋ GEPA 的變異引擎 ＋ code 統計 gate ＋ HITL 否決**——用「held-out anchor 上的統計門檻（人只能否決、碰不到 val/test）」當防 reward-hacking 的鐵閘。
+這就是 **RQGM 的 epoch 結構 ＋ GEPA 的變異引擎 ＋ code 統計 gate ＋ HITL 否決**——用「held-out anchor 上的統計門檻（frontier 選在 `dev`、gate 只看 `val`、`test` 純報告，人只能否決、碰不到 val/test）」當防 reward-hacking 的鐵閘。
 
 ### 架構圖 (Architecture)
 
@@ -62,7 +62,7 @@ flowchart TD
     Judge --> Export[產出可跑 PoC 模板<br/>+ AMD TCO / ROI 提案]
     Export --> Feedback[[HITL Feedback<br/>= Ground-Truth Anchor]]
     Feedback -. cold path, async .-> Loop[GEPA Pareto-frontier search<br/>+ self-play red-team]
-    Loop -. frontier best .-> CodeGate{CODE gate<br/>val P1 非劣 + P2 bootstrap<br/>hack-ratio rqgm}
+    Loop -. frontier best · dev BBε .-> CodeGate{CODE gate<br/>val P1 非劣 + P2 Bayesian 後驗≥0.95 & Δsep≥MDE<br/>hack-ratio rqgm}
     CodeGate -. fail .-> Loop
     CodeGate -. pass .-> EpochGate{{HITL veto 安全鎖<br/>只能否決}}
     EpochGate -. approve → epoch++ .-> Judge
@@ -176,7 +176,7 @@ docker compose -f infra/docker-compose.rocm.yml up --build
 | **③ Simulate** | 同工作負載掃全階梯：RX 7900 XTX `max_pop=8` → W7900 48 GB `=48` → **MI300X 192 GB `=292`（≈36.5×）** → MI325X `=400`；MI300X ~217 tok/s（**SIMULATED**） |
 | **④ Export** | 目標 MI300X → **FEASIBLE**，產出 TCO/ROI 提案 ＋ 6 個可跑檔案（`docker-compose.yml`, `Dockerfile`, `app.py`, `README.md`, `requirements.txt`, `.env.example`） |
 | **HITL 編排** | `orchestrate` → Gatekeeper 通過 → Evaluator → **HITL interrupt**；`resume{approved:true}` → 完成 |
-| **RQGM 進化** | `epoch/propose` 跑 GEPA Pareto frontier + self-play 紅隊 → 回 frontier best；`epoch/approve` **先過 code gate**（`val` P1 非劣 + P2 bootstrap）再由 HITL 加簽（只能否決）→ **epoch 0 → 1**；`GET /api/admin/report` 看 val/test separation、hack-ratio、judge κ |
+| **RQGM 進化** | `epoch/propose` 跑 GEPA Pareto frontier（Thompson 父代）+ self-play 紅隊 → 回 frontier best（`dev` 選擇split BBε）；`epoch/approve` **先過 code gate**（`val` P1 非劣 + P2 Bayesian 後驗/MDE）再由 HITL 加簽（只能否決）→ **epoch 0 → 1**；`GET /api/admin/report` 看 val/test separation、over-acceptance、over-optimization gap、hack-ratio、judge κ、provenance |
 
 > 詳細逐步走查與畫面說明見 [`docs/DEMO.md`](docs/DEMO.md)。
 
@@ -195,12 +195,14 @@ docker compose -f infra/docker-compose.rocm.yml up --build
 | 7 | `POST /api/session/{id}/evaluate` | RQGM judge：deficit_score + red_flags |
 | 8 | `POST /api/session/{id}/export` | Step 4：TCO markdown + `deploy_files` map |
 | 9 | `POST /api/session/{id}/feedback` | HITL ground-truth anchor |
-| 10 | `POST /api/admin/epoch/propose` | GEPA **Pareto-frontier** challenger + `frontier` + metrics |
-| 11 | `POST /api/admin/epoch/approve` | 兩段式：`gate`（code gate P1/P2）+ `hitl`（veto）+ `champion_exploitation`/`challenger_exploitation`/`erased_memories`/`reconfirmed_memories` |
-| 12 | `GET /api/admin/report` | RQGM 透明度報告：val/test separation、hack-ratio、judge accuracy/κ、frontier、memory |
+| 10 | `POST /api/admin/epoch/propose` | GEPA **Pareto-frontier** challenger + `frontier`（Thompson 父代 `child_successes`/`child_trials`）+ `metrics`（`split="dev"` 選擇split 分離度） |
+| 11 | `POST /api/admin/epoch/approve` | 兩段式：`gate`（P1 非劣 + **P2 Bayesian 後驗** `posterior_prob_improvement`/`posterior_threshold` + `effect_size`/`min_detectable_effect` + `n_wins`/`n_losses`/`n_ties` + `per_flaw_wins`）+ `hitl`（veto）+ `champion_exploitation`/`challenger_exploitation`/`erased_memories`/`reconfirmed_memories` |
+| 12 | `GET /api/admin/report` | RQGM 透明度報告：`data_splits`(train/dev/val/test)、val/test separation、**`over_optimization`**(proxy val−gold test gap)、**`over_acceptance`**、hack-ratio、judge accuracy/κ、frontier、memory、**`provenance`** |
 
-額外（非契約，用於驅動 LangGraph）：`GET /health`（含 `evaluator` 摘要：separation / hack-ratio / judge κ）、`GET /`、`GET /api/graph`、
+額外（非契約，用於驅動 LangGraph）：`GET /health`（含 `inference.using_mock` 與 `evaluator` 摘要：val/test separation / `proxy_gold_separation_gap` / `over_acceptance_rate` / hack-ratio / judge κ）、`GET /`、`GET /api/graph`、
 `POST /api/session/{id}/orchestrate` + `/orchestrate/resume`。
+
+> **前端可視化註記**：admin console（Live/Mock 皆可）會渲染新的 gate 形狀——P2 後驗機率 vs 門檻、效果量 vs MDE、per-flaw 勝負 breakdown、四路 data splits、over-acceptance / over-optimization 監測、provenance。`provenance` 由 `build_report` 產生，但目前 `EpochReportResponse` 未宣告該欄位，故在 **Live 模式會被 pydantic 過濾**（Mock 模式一定看得到）。
 
 **慣例**：記憶體為 decimal GB（1 GB = 1e9 B）；activations = 10% × (weights + KV)；overhead = 固定 1 GB；
 KV cache 固定 fp16；tokens/s 套用 0.7 memory-efficiency 係數（服務層）。前端 MOCK 的 `lib/vram.ts`
@@ -232,7 +234,7 @@ yy-rqgm/
 ├── frontend/                  # Next.js 16 4-step wizard（lib/api.ts, lib/vram.ts, …）
 ├── infra/                     # docker-compose.yml + docker-compose.rocm.yml
 ├── scripts/                   # dev.sh（起服務）、demo.sh（走查）、quantize_quark.py
-├── data/                      # anchor/（22 labeled: train/val/test）、frontier/、epoch_state.json、rqgm_state.json
+├── data/                      # anchor/（48 labeled: train/dev/val/test）、frontier/、epoch_state.json、rqgm_state.json
 └── tests/                     # 74 tests（gatekeeper 物理數學 + RQGM gate/frontier/erasure 必測）
 ```
 
@@ -252,7 +254,7 @@ cd frontend && npm run build   # frontend：type-check + production build
 - 📐 [`docs/blueprint.md`](docs/blueprint.md) — 主索引（4 模組 + 4 目標）
 - 🧭 [`docs/01-orchestration.md`](docs/01-orchestration.md) — LangGraph 編排、Hot/Cold path、智慧製造 anchor
 - 🧮 [`docs/02-sizing-math.md`](docs/02-sizing-math.md) — VRAM / KV / bandwidth 公式、prefix caching、MI300X 記憶體優勢
-- ⚖️ [`docs/03-evaluator.md`](docs/03-evaluator.md) — deficit-scoring rubric、GEPA Pareto frontier、two-stage code gate（P1/P2）+ rqgm hack-ratio、selective erasure、防 reward-hacking
+- ⚖️ [`docs/03-evaluator.md`](docs/03-evaluator.md) — deficit-scoring rubric、GEPA Pareto frontier（dev 選擇 + Thompson 父代）、two-stage code gate（P1 非劣 + P2 Bayesian 後驗/MDE）+ rqgm hack-ratio、over-acceptance/over-optimization/provenance、selective erasure、防 reward-hacking
 - 🧱 [`docs/04-stack-export.md`](docs/04-stack-export.md) — ROCm 棧 ↔ tier 對應、docker-compose、C-Level TCO/ROI 邏輯
 - 📊 [`docs/DEMO.md`](docs/DEMO.md) — 智慧製造端到端走查（本 README demo 的詳版）
 

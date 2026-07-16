@@ -236,24 +236,25 @@ flowchart TD
 
 1. **讀 trace 當 textual gradient**：GEPA 讀 evaluator 的 `<thinking>` 與 candidate 的完整軌跡，診斷「為什麼這條 poison pill 被漏判」，產生**可執行的文字修正**（例如「新增一條 red flag：當閥開度指令與流量回饋背離時視為 pc_ducttape」）。這比「答錯了，reward −1」資訊量高幾個數量級。
 2. **樣本效率 ~35× 於 RL(GRPO)**：evaluator 的每次「rollout」都很貴（要跑完整 candidate + surrogate 驗證），GEPA 用 100–500 次評估達到 RL 需要上萬次的效果——這與本平台把進化放 cold path、盡量省 rollout 的成本邏輯（[`02-sizing-math.md`](./02-sizing-math.md) §5.4）完全一致。
-3. **Pareto frontier 防 collapse**（**已實作**，[`backend/evaluator/frontier.py`](../backend/evaluator/frontier.py)）：不是只留「總分最高」的單一 rubric，而是保留 **top-K 非 dominated** 的族群。多目標為：**per-criterion 分離度 `sep::<criterion>`**（每個 criterion / poison pill 各自留最佳）＋ **`parsimony`**（`−(GEPA 新增 criterion 數)`，逼出「廣覆蓋 vs 精簡」的真取捨）＋ **`adversarial`**（self-play 紅隊樣本上仍嚴格者得分更高，見本節下方 Adversarial Self-Play）。這避免 local optimum 與 diversity collapse（rubric 全退化成只會抓一種錯）。整條 frontier 每個 epoch 落地到 `data/frontier/epoch-*.json` 供重現。
+3. **Pareto frontier 防 collapse**（**已實作**，[`backend/evaluator/frontier.py`](../backend/evaluator/frontier.py)）：不是只留「總分最高」的單一 rubric，而是保留 **top-K 非 dominated** 的族群。多目標為：**per-criterion 分離度 `sep::<criterion>`**（每個 criterion / poison pill 各自留最佳）＋ **`parsimony`**（`−(GEPA 新增 criterion 數)`，逼出「廣覆蓋 vs 精簡」的真取捨）＋ **`adversarial`**（self-play 紅隊樣本上仍嚴格者得分更高，見本節下方 Adversarial Self-Play）。這避免 local optimum 與 diversity collapse（rubric 全退化成只會抓一種錯）。frontier 在 **`dev` 選擇split**（selection split）上以 BBε 下界排名——刻意選在 code gate 從不看的 split 上，消除 winner's curse：gate 之後在 `val` 上的再測才是**真的** held-out，而不是重測 selection 已偷看過的 split。父代選擇改用 **Thompson 取樣**（每個 frontier member 帶一個 `Beta(prior+成功, prior+失敗)` 後驗，取代舊的近乎均勻 `bbe+1` 權重）。整條 frontier 每個 epoch 落地到 `data/frontier/epoch-*.json` 供重現。
 
 ```python
 # GEPA reflective mutation loop (cold path) — 已實作於 backend/evaluator/{evolve,frontier}.py
 def gepa_evolve(incumbent_text, *, epoch, budget=6, top_k=8, adversarial_samples=None):
     frontier = ParetoFrontier(top_k=top_k)                         # top-K 非 dominated
-    frontier.add(incumbent_text, compute_objectives(incumbent_text, VAL))
+    frontier.add(incumbent_text, compute_objectives(incumbent_text, DEV))   # 在 dev 選擇split 評
     for i in range(budget):
-        parent = frontier.sample_stochastic(rng)                  # 偏 BBε 高者、保多樣性
+        parent = frontier.sample_stochastic(rng)                  # Thompson 取樣父代（每個 member 一個 Beta 後驗）
         trace  = select_failure_trace(parent, TRAIN_weak)         # 挑 strict−loose 落差最大的 train weak anchor
         _, _, new_criteria = reflect_and_mutate(parent, trace, epoch)   # 反思 → 提新 criterion
         try:
             child = mutate_rubric_text(parent, new_criteria, ...)  # 改 rubric XML；不 well-formed 就 reject
         except RubricValidationError:
             continue
-        obj, bbe, _ = compute_objectives(child, VAL, adversarial_samples=...)  # 只在 held-out VAL 評
-        frontier.add(FrontierMember(child, objectives=obj, bbe=bbe))   # 非 dominated 才留
-    return frontier          # frontier.best()（VAL 上 BBε 下界最佳）→ 送 §6 code gate
+        obj, bbe, _ = compute_objectives(child, DEV, adversarial_samples=...)  # 只在 dev 選擇split 評（val 留給 gate）
+        kept = frontier.add(FrontierMember(child, objectives=obj, bbe=bbe))    # 非 dominated 才留
+        frontier.record_child_outcome(parent, improved=kept and bbe > parent.bbe)  # Thompson 回饋
+    return frontier          # frontier.best()（dev 上 BBε 下界最佳）→ 送 §6 code gate（gate 再於 held-out val 重測）
 ```
 
 > **offline 誠實邊界**：無 live 模型時，`reflect_and_mutate` 走 deterministic mock（`MockMarker.MUTATE`），失敗 trace 的挑選也是 deterministic（strict−loose 落差最大者）。因此 offline 的「反思」不是真 LLM 診斷，而是一條可重現的 fallback（傾向補上 `reward_hacking_resistance` 這類 champion-0 漏掉的 criterion）。真 reflective 進化需接上本地模型（Lemonade/vLLM）。GEPA 論文宣稱的 ~35× rollout 效率是引用其研究結果，非本 repo offline 實測。
@@ -283,32 +284,33 @@ frontier 的 `adversarial` 目標由一個 self-play 紅隊供料（[`backend/ev
 
 challenger 再漂亮，也**不會自動上線**。它必須先過一道 **code 統計門檻**，通過後 HITL 才被諮詢——而 **HITL 只能否決、不能覆寫失敗的 gate**（[`backend/evaluator/evolve.py`](../backend/evaluator/evolve.py) `approve_challenger` 兩段式）。這是補回的 RQGM 反 reward-hacking 核心（先前版本把一個 `separation_delta = −0.34` 的**更差** challenger 純憑 HITL 布林值升級了）。
 
-### 6.1 Held-out labeled anchor set + train/val/test 隔離
+### 6.1 Held-out labeled anchor set + train/dev/val/test 隔離
 
-anchor 不再是「拿 HITL feedback 當替身」。它現在是一份**真的 held-out human-labeled set**：[`data/anchor/anchor_architectures.json`](../data/anchor/anchor_architectures.json) 有 **22 個**架構，每個帶 `label`（`weak|strong` 人類 ground-truth）、植入的 `flaws[]` / `strengths[]` tag，外加一份 `flaw_taxonomy`（[`backend/evaluator/anchors.py`](../backend/evaluator/anchors.py)）。**data isolation** 防 gate 被 reward-hack：
+anchor 不再是「拿 HITL feedback 當替身」。它現在是一份**真的 held-out human-labeled set**：[`data/anchor/anchor_architectures.json`](../data/anchor/anchor_architectures.json) 有 **48 個**架構，每個帶 `label`（`weak|strong` 人類 ground-truth）、植入的 `flaws[]` / `strengths[]` tag，外加一份 `flaw_taxonomy`（[`backend/evaluator/anchors.py`](../backend/evaluator/anchors.py)）。**四路 data isolation** 防 gate 被 reward-hack：
 
-| split | 數量 | 用途 |
+| split | 數量 (weak/strong) | 用途 |
 |-------|------|------|
-| `train` | 10 | **只有** GEPA proposer 看得到（挑失敗 trace、反思變異） |
-| `val` | 7 | **只有** code gate 評分（P1/P2、hack-ratio） |
-| `test` | 5 | **只**供報告（`/api/admin/report`），從不驅動變異或 gate |
+| `train` | 19 (14/5) | **只有** GEPA proposer 看得到（挑失敗 trace、反思變異的文字梯度） |
+| `dev` | 7 (5/2) | **frontier 選擇/排名**（`frontier.best` 以 dev 上 BBε 下界）——gate 從不看，故消除 winner's curse |
+| `val` | 13 (9/4) | **只有** code gate 評分（P1 非劣 + P2 Bayesian 後驗/MDE、hack-ratio） |
+| `test` | 9 (6/3) | **只**供報告（`/api/admin/report`），從不驅動變異、選擇或 gate |
 
-HITL feedback 仍會收集，但它現在餵給 GEPA 當 textual side-information、並在 gate 後當**最終否決權**，不再是唯一的 gate。
+在 `dev`（而非 `val`）上選 frontier，是刻意的：`val` 只被 code gate 評分、selector 永遠碰不到，因此 gate 是一次**真正的 held-out 再測**，而非重測 selector 已偷看過的 split（no winner's curse）。HITL feedback 仍會收集，但它現在餵給 GEPA 當 textual side-information、並在 gate 後當**最終否決權**，不再是唯一的 gate。
 
 ### 6.2 兩段式晉升門檻：CODE gate → HITL veto
 
 **Stage 1 — CODE gate**（[`backend/evaluator/gate.py`](../backend/evaluator/gate.py)，只看 `val`）：
 
 - **P1（non-inferiority）**：`challenger_sep ≥ champion_sep`，且**平手偏袒現任**（`tie_favors_incumbent` → challenger 必須*嚴格*更好）。`separation = mean deficit(weak) − mean deficit(strong)`，越高越能分辨好壞。
-- **P2（paired bootstrap，BBε-style 下界）**：對 val anchor 做 **stratified + paired** 重抽樣，要求 `(challenger − champion)` 分離度 CI 的**下界 > 0**。
+- **P2（Bayesian Beta-Binomial 後驗 + 最小可偵測效果 MDE）**：舊 P2 是對 ~7 個 val anchor 做 paired bootstrap，離線時強項相消（有效 N≈4 weak），會**結構性地否決真的單一 flaw-family 修正**。現改為對 weak（gamed）anchor 的**逐錨點配對*勝負指標***建 Beta-Binomial 後驗：每個 weak anchor，challenger 罰得比 champion *更重*（`challenger_deficit > champion_deficit`，抓到更多植入失敗）記一勝、反之記一負、平手（|Δ|<ε）不計方向。以 `Beta(prior_α+勝, prior_β+負)` 後驗回報 `posterior_prob_improvement = P(Δsep>0) := P(θ>0.5)`（challenger 在 held-out 弱架構上分離度優於現任的後驗機率）。**晉升需 `P(Δsep>0) ≥ posterior_threshold`（預設 0.95）且觀測效果 `effect_size = Δsep ≥ min_detectable_effect`（MDE，預設 0.10）兩者皆過**；並回報 `n_wins/n_losses/n_ties` 與 **per-flaw-family 勝負 breakdown**（`per_flaw_wins`）供稽核。
 
-兩關都過 `passed=True` 才進 Stage 2。
+兩關都過 `passed=True` 才進 Stage 2。`gate` dict 因此帶 `p1_non_inferior` / `p2_passed` / `posterior_prob_improvement` / `posterior_threshold` / `effect_size` / `min_detectable_effect` / `n_wins` / `n_losses` / `n_ties` / `n_weak` / `per_flaw_wins`（**取代**舊的 `bootstrap_lower_bound` / `bootstrap_alpha`）。
 
 **Stage 2 — HITL veto**：code gate 通過後才諮詢人類；`approve=False` 否決一個原本會過的 challenger，`approve=True` 才 `epoch++` 晉升。**人類無權覆寫失敗的 code gate。**
 
 ```mermaid
 flowchart LR
-    Ch["challenger rubric<br/>(frontier best by BBε)"] --> Gate{"CODE GATE (val)<br/>P1 非劣 + P2 bootstrap 下界>0?"}
+    Ch["challenger rubric<br/>(frontier best · dev BBε)"] --> Gate{"CODE GATE (val)<br/>P1 非劣 + P2 後驗 P(Δsep>0)≥0.95 & Δsep≥MDE?"}
     Gate -->|"fail"| Keep["維持 incumbent<br/>challenger 回 frontier<br/>(HITL 不被諮詢)"]
     Gate -->|"pass"| HITL{{"HITL 加簽 (安全鎖 / 只能否決)"}}
     HITL -->|"veto"| Keep
@@ -316,7 +318,7 @@ flowchart LR
     Promote --> Erase["selective erasure:<br/>soft-delete + reconfirm"]
 ```
 
-`POST /api/admin/epoch/approve` 因此回傳 `gate`（P1/P2 明細）、`hitl`（是否被諮詢/否決）、`champion_exploitation` / `challenger_exploitation`（§6.3）、`erased_memories` / `reconfirmed_memories`（§6.4）。
+`POST /api/admin/epoch/approve` 因此回傳 `gate`（P1 非劣 + P2 後驗機率/MDE/per-flaw 明細）、`hitl`（是否被諮詢/否決）、`champion_exploitation` / `challenger_exploitation`（§6.3）、`erased_memories` / `reconfirmed_memories`（§6.4）。
 
 ### 6.3 Strict/Loose Hack-Ratio + `rqgm` tolerance tightening
 
@@ -325,6 +327,13 @@ flowchart LR
 這條訊號接上官方 **[`rqgm`](https://pypi.org/project/rqgm/) 套件**（已加入 [`pyproject.toml`](../pyproject.toml)）的 `EpochManager` / `EpochConfig` / `TransitionReason`（[`backend/evaluator/rqgm_adapter.py`](../backend/evaluator/rqgm_adapter.py)）：mean hack-ratio 低於門檻 → 觸發 `EXPLOITATION_DETECTED` → **收緊 tolerance schedule**（丟掉最鬆的一級 = evaluator 變嚴），schedule 持久化到 `data/rqgm_state.json` 跨 epoch 累積。若環境無法 import `rqgm`（完全 air-gapped 無 wheel），一個**忠實的 local fallback** 複製同樣的 hack-ratio + 單級收緊邏輯；`RQGM_BACKEND` 記錄目前是 `"rqgm"` 還是 `"local-fallback"`。
 
 > **對齊 τ_epoch（§1）**：RQGM 的 tolerance level 就是本平台的 `strictness_level`——把「penalty / τ 進化」用 tolerance schedule 承載，而**非**把數字重寫進 rubric XML。這是刻意的 adapter 設計，不是 XML 改寫。
+
+**額外的透明度監測（[`backend/evaluator/report.py`](../backend/evaluator/report.py) `build_report` / `health_summary`）**：除了 hack-ratio，報告另算兩個泛化 / 過擬合訊號：
+
+- **over-acceptance**（`over_acceptance.over_acceptance_rate`）：用強化過的 self-play 紅隊（**含 out-of-catalog 偽裝 gaming**）算「被 rubric 誤判為 strong（`deficit < τ`）的 gamed/weak 樣本比例」。高值 = 判官被偽裝的 poison pill 騙過（generalization 差、reward-hacking 風險），每個樣本回報 `deficit` / `accepted_as_strong` / `out_of_catalog`。
+- **over-optimization gap**（`over_optimization.separation_gap`，`/health` 為 `proxy_gold_separation_gap`）：`proxy(val) − gold(test)` 分離度落差。大的正 gap = champion 在靠近進化迴圈的 `val` 上比未動過的 gold `test` 明顯更利（過度最佳化警訊）。
+
+報告與 `/health` 亦帶 **`provenance`**（`judge_model` + `git_sha` + `rqgm_backend` + `using_mock`），把每份數字綁到產生它的模型與原始碼版本，方便重現 / 稽核。
 
 ### 6.4 Selective Erasure（選擇性抹除，非全量清空）
 
@@ -376,7 +385,7 @@ flowchart TD
 
 1. **兩個迴圈物理分離**：解法在 harness loop 進化；評審在**獨立的** evaluator loop 進化。harness 只能被 frozen evaluator 評，**無權修改評審**。
 2. **Epoch freeze**：在一個 epoch 內評審完全凍結，harness 無法透過「即時觀察評分變化」來反推並攻擊評審。
-3. **外部 code gate 是最終裁判**：evaluator 的升級**不由 proposer 內部指標決定**，而由一道 **code 統計門檻**判定——它只在 **held-out `val` anchor** 上評分（GEPA proposer 只看 `train`，永遠碰不到 `val`／`test`，§6.1 data isolation），HITL 再加一層否決權（§6.2）。系統無法 hack 一個它訓練時碰不到的裁判。
+3. **外部 code gate 是最終裁判**：evaluator 的升級**不由 proposer 內部指標決定**，而由一道 **code 統計門檻**判定——它只在 **held-out `val` anchor** 上評分（GEPA proposer 只驅動於 `train`、在 `dev` 上選 frontier，永遠碰不到 gate 的 `val` 與報告的 `test`，§6.1 四路 data isolation），HITL 再加一層否決權（§6.2）。系統無法 hack 一個它訓練 / 選擇時都碰不到的裁判。
 
 再加上 GEPA 的 Pareto frontier 維持 rubric 多樣性（§5），避免 evaluator 退化成只會抓單一種錯的偏執狂。**一句話**：讓解法進化、讓評審進化，但**永遠不讓解法決定評審**，且**評審的升級權握在系統之外的人手上**。
 
@@ -460,13 +469,13 @@ flowchart LR
 - Evaluator 用 **Deficit Scoring**（float `[0,1]`、bounded per-criterion、只找 Red Flag）對抗諂媚與「被症狀騙」；critical 一票否決是 live-judge 設計，offline mock 採 bounded 加總（誠實近似）。
 - **XML reference schema** 承載嚴格 rubric + 強制 CoT；shipped 的 champion-0 seed 是精簡的 **JSON-output** 變體，domain criteria / poison pill 於 judge 時 merge（poison pill 只在 strict 模式）。
 - 三大 failure mode（Physics Common Sense、Diagnostic Resilience、Implementation Drift）各以 poison pill（broken valve、correlated noise、tight coupling）驗證。
-- **GEPA reflective evolution 已實作**：Pareto frontier（`sep::<criterion>` + `parsimony` + `adversarial` 多目標、top-K 非 dominated、落地 `data/frontier/`）；`epoch/propose` 回傳 frontier best（anchor BBε）送 gate。（GEPA ~35× rollout 為引用其論文，非 offline 實測。）
-- **兩段式晉升門檻**：**CODE gate 先行**（val 上 P1 非劣 + P2 paired-bootstrap 下界 > 0，平手偏袒現任），**HITL 只能否決不能覆寫**；strict/loose **hack-ratio** 接官方 `rqgm` 套件，`EXPLOITATION_DETECTED` 自動收緊 tolerance（`RQGM_BACKEND` = `rqgm` / `local-fallback`）。
-- **Data isolation**：22 個 labeled anchor 拆 `train`(10)/`val`(7)/`test`(5)——GEPA 只讀 train、gate 只看 val、test 供報告。
+- **GEPA reflective evolution 已實作**：Pareto frontier（`sep::<criterion>` + `parsimony` + `adversarial` 多目標、top-K 非 dominated、落地 `data/frontier/`），**父代以 Thompson 取樣**；`epoch/propose` 在 **`dev` 選擇split** 上以 BBε 下界選 frontier best 送 gate。（GEPA ~35× rollout 為引用其論文，非 offline 實測。）
+- **兩段式晉升門檻**：**CODE gate 先行**（val 上 P1 非劣 + **P2 Bayesian Beta-Binomial 後驗 `P(Δsep>0)≥0.95` 且 `Δsep≥MDE`**，平手偏袒現任，回報 per-flaw 勝負 breakdown），**HITL 只能否決不能覆寫**；strict/loose **hack-ratio** 接官方 `rqgm` 套件，`EXPLOITATION_DETECTED` 自動收緊 tolerance（`RQGM_BACKEND` = `rqgm` / `local-fallback`）。報告另有 **over-acceptance**、**over-optimization gap**、**provenance**。
+- **四路 Data isolation**：48 個 labeled anchor 拆 `train`(19)/`dev`(7)/`val`(13)/`test`(9)——GEPA 只讀 train、frontier 選在 dev、gate 只看 val、test 供報告。
 - **Judge panel + self-consistency**（多 persona/溫度、median + 多數決、criterion 順序隨機化）；校準指標改用 **accuracy / Cohen's κ**（gate 仍用 separation 統計下界）。
 - 升級後 **selective erasure = soft-delete + reconfirm**：`heuristic_failure` 由新 champion 重驗、軟刪不再確認者、延後硬 purge；`physics_truth` 永久保留（由 gatekeeper 灌入）。
 - Evaluator **恆在進化 harness 之外** + epoch freeze + **外部 labeled anchor 的 code gate**，從結構上封死 reward hacking。
 - **Self-healing Qdrant memory**：`memory_type` × `created_at_epoch` 治理 + hybrid search（**已接上 judge**，embedding 為 offline hashing BoW 近似）+ soft-delete/purge。
-- **offline 誠實邊界**：judge 為 deterministic rubric-aware **mock**（`mock_scoring.py`），真 live 評分需本地模型（Lemonade/vLLM）；**MCTS/Thompson 與 multi-agent debate 仍為 optional/未實作**。
+- **offline 誠實邊界**：judge 為 deterministic rubric-aware **mock**（`mock_scoring.py`），真 live 評分需本地模型（Lemonade/vLLM）；frontier 父代選擇的 **Thompson 取樣已實作**，但 **MCTS 與 multi-agent debate 仍為 optional/未實作**。
 
 *下一步：[`04-stack-export.md`](./04-stack-export.md) — 這一切跑在哪些開源元件上、怎麼部署、怎麼算給 C-Level 聽。*

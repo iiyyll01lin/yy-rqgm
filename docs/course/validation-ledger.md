@@ -54,7 +54,7 @@ Diátaxis 類型：reference。
 | **tokens/s 上界**（Llama-3-70B int4 35 GB, batch=1） | 頻寬數學 | H100 ~67 · H200 ~96 · MI300X ~106 · MI325X ~120（×0.7 MBU） | [`../02-sizing-math.md`](../02-sizing-math.md) §3.3 | `deterministic`（解析上界；T4 規格值） | 02-sizing-math |
 | **RQGM evaluate**（弱設計） | Evaluator | `deficit_score ≈ 0.6`；red_flags = `physics_common_sense`（duct-tape）+ `diagnostic_resilience`（相關噪聲） | [`backend/evaluator/judge.py`](../../backend/evaluator/judge.py) + [`rubric.xml`](../../backend/evaluator/rubric.xml) | `mock`（deterministic judge）/ `live-hw`（有 Lemonade 時） | DEMO |
 | **Orchestrate + HITL** | LangGraph | `router→task_agent→gatekeeper→(feasible)→evaluator→hitl`；infeasible **HARD REJECT**（省 GPU）；`resume{approved:true}` 完成 | [`backend/graph/orchestrator.py`](../../backend/graph/orchestrator.py) + [`tests/test_domains_router.py`](../../tests/test_domains_router.py) | `deterministic`（路由/閘）+ `mock`（LLM node） | DEMO |
-| **Epoch 進化** | Evaluator | `epoch/propose` 跑 GEPA Pareto frontier + 紅隊 → frontier best；`epoch/approve` **先過 code gate**（val P1 非劣 + P2 bootstrap）再 HITL 加簽（只能否決）→ **epoch 0→1** + selective erasure（soft-delete + reconfirm；`physics_truth` 永久保留） | [`backend/evaluator/evolve.py`](../../backend/evaluator/evolve.py) + [`gate.py`](../../backend/evaluator/gate.py) + [`frontier.py`](../../backend/evaluator/frontier.py) + [`rqgm_adapter.py`](../../backend/evaluator/rqgm_adapter.py) + [`tests/test_rqgm_phases.py`](../../tests/test_rqgm_phases.py) | `deterministic` / `mock`（可重現） | DEMO + 03-evaluator |
+| **Epoch 進化** | Evaluator | `epoch/propose` 跑 GEPA Pareto frontier（Thompson 父代）+ 紅隊 → frontier best（`dev` BBε）；`epoch/approve` **先過 code gate**（val P1 非劣 + P2 Bayesian 後驗/MDE）再 HITL 加簽（只能否決）→ **epoch 0→1** + selective erasure（soft-delete + reconfirm；`physics_truth` 永久保留）；`report` 另含 over-acceptance / over-optimization gap / provenance | [`backend/evaluator/evolve.py`](../../backend/evaluator/evolve.py) + [`gate.py`](../../backend/evaluator/gate.py) + [`frontier.py`](../../backend/evaluator/frontier.py) + [`rqgm_adapter.py`](../../backend/evaluator/rqgm_adapter.py) + [`tests/test_rqgm_phases.py`](../../tests/test_rqgm_phases.py) | `deterministic` / `mock`（可重現） | DEMO + 03-evaluator |
 | **Export**（目標 MI300X） | Export | **FEASIBLE**；TCO/ROI markdown + 6 個可跑檔（compose/Dockerfile/app.py/README/requirements/.env） | [`backend/export/tco.py`](../../backend/export/tco.py) + [`deploy_template/renderers.py`](../../backend/export/deploy_template/renderers.py) | `SIMULATED`（目標 T4）+ `deterministic`（sizing） | DEMO Step 4 |
 | **後端測試套件** | 全平台 | **74 passed**（deterministic，離線，無 GPU） | [`tests/`](../../tests/test_api_smoke.py) | `deterministic` | README |
 
@@ -89,7 +89,7 @@ Diátaxis 類型：reference。
 | **Tier 4 Instinct 實機** | 一切 `SIMULATED`（公式 + 縮小 population） | 取得真 MI300X/MI325X 後，把 `SIMULATED` 列升級為 `live-hw`（數字可能收斂，方向不變） |
 | **Live 本地推論** | 預設 `mock`（筆電） | 在真 AMD box + 模型權重上開 Lemonade / vLLM ROCm，judge 走 `live-hw` |
 | **production 記憶 / checkpointer** | Qdrant in-memory + `SqliteSaver` | 換 production Qdrant + `PostgresSaver`（[`../01-orchestration.md`](../01-orchestration.md) §4） |
-| **統計化 epoch gating（P2）** | 目前 P1：HITL 直接核准 | anchor label 累積足夠後改 held-out 統計檢定（[`../blueprint.md`](../blueprint.md) §7 P1→P2） |
+| **live provenance 欄位** | `build_report` 產生 `provenance`（judge model + git sha + using_mock），但 `EpochReportResponse` 未宣告該欄位，Live 模式會被 pydantic 過濾（Mock 模式可見） | backend 於 `EpochReportResponse` 補上 `provenance` 欄位即可在 Live 端曝露（本輪 docs+frontend-only，未動 backend） |
 
 ---
 
