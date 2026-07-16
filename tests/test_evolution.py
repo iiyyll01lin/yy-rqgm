@@ -106,10 +106,24 @@ def test_gate_config_is_configurable():
         "challenger-cfg",
         1,
     )
-    strict = gate.GateConfig(bootstrap_iters=500, bootstrap_alpha=0.05)
-    res = gate.evaluate_promotion(champion, better, domain_id="smart_manufacturing", epoch=0, config=strict)
+    # Bayesian P2 knobs are exposed via GateConfig; the reward-hacking fix clears
+    # both the posterior threshold and the minimum practical effect (MDE).
+    cfg = gate.GateConfig(posterior_threshold=0.9, min_detectable_effect=0.05)
+    res = gate.evaluate_promotion(champion, better, domain_id="smart_manufacturing", epoch=0, config=cfg)
     assert res.passed is True
-    assert res.bootstrap_alpha == 0.05
+    assert res.p2_passed is True
+    assert res.posterior_threshold == 0.9
+    assert res.posterior_prob_improvement >= 0.9
+    assert res.effect_size >= 0.05
+    assert res.n_wins >= 1
+
+    # The config actually drives the gate: raising the MDE above the achievable
+    # effect rejects on effect size alone, even though the posterior is decisive.
+    strict = gate.GateConfig(min_detectable_effect=0.95)
+    res2 = gate.evaluate_promotion(champion, better, domain_id="smart_manufacturing", epoch=0, config=strict)
+    assert res2.passed is False
+    assert res2.p1_non_inferior is True
+    assert res2.p2_passed is False
 
 
 # ---------------------------------------------------------------------------

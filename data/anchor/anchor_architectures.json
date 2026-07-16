@@ -1,5 +1,5 @@
 {
-  "_comment": "Held-out ground-truth anchor set used to gate RQGM epoch upgrades and measure champion-vs-challenger separation + judge/human agreement. 'label' is the human ground-truth verdict (weak|strong). 'flaws'/'strengths' are the planted, machine-readable tags the offline mock reads (see backend/inference/mock_scoring.py). 'split' isolates data: GEPA/proposer sees ONLY 'train', the code gate sees ONLY 'val', and 'test' is held out purely for reporting. Headroom flaws (kpi_sensor_gaming, concept_drift_blind) are NOT covered by the seed champion-0 rubric, so a genuinely better rubric that adds coverage measurably increases separation.",
+  "_comment": "Held-out ground-truth anchor set used to gate RQGM epoch upgrades and measure champion-vs-challenger separation + judge/human agreement. 'label' is the human ground-truth verdict (weak|strong). 'flaws'/'strengths' are the planted, machine-readable tags the offline mock reads (see backend/inference/mock_scoring.py). 'split' isolates data: GEPA/proposer sees ONLY 'train' (and, from Phase 5, a 'dev' split for frontier selection), the code gate sees ONLY 'val', and 'test' is held out purely for reporting. Headroom flaws (kpi_sensor_gaming, concept_drift_blind) are NOT covered by the seed champion-0 rubric, so a genuinely better rubric that adds coverage measurably increases separation. POWER DESIGN (p0_power): every flaw family in FLAW_CATALOG carries >= 8 weak anchors distributed across the splits, and each headroom family appears in >= 1/4 of the VAL weak anchors, so a single-flaw-family fix moves enough held-out weak anchors for the Bayesian gate to ratify it.",
   "flaw_taxonomy": {
     "numerical_ducttape": "Masks a symptom (threshold/filter/clamp) instead of the physical root cause.",
     "conservation_violation": "Proposes an action that violates a hard physical/conservation limit.",
@@ -104,6 +104,168 @@
       "strengths": []
     },
     {
+      "id": "train_weak_conservation1",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "A recommender commands a coolant flow above the pump's rated head to hit a temperature target, ignoring the conservation-of-mass limit. It averages a bank of correlated flow sensors as if they were independent, and passes state through untyped dicts.",
+      "flaws": ["conservation_violation", "noise_capture", "no_state_schema"],
+      "strengths": []
+    },
+    {
+      "id": "train_weak_conservation2",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "Sets a heater duty cycle that would require more power than the feeder can deliver (energy-balance violation). Treats correlated line-voltage noise as a genuine load signal. No explicit state shape.",
+      "flaws": ["conservation_violation", "noise_capture", "no_state_schema"],
+      "strengths": []
+    },
+    {
+      "id": "train_weak_conservation3",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "Recommends drawing down a buffer tank below its physical minimum to smooth throughput, violating mass balance. It reacts to correlated level-sensor ripple as if it were real. State is implicit ad-hoc keys.",
+      "flaws": ["conservation_violation", "noise_capture", "no_state_schema"],
+      "strengths": []
+    },
+    {
+      "id": "train_weak_conservation4",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "Proposes a heat-exchanger setpoint that exceeds the second-law feasible duty. It root-causes off a single flow meter and mistakes correlated sensor noise for a trend, with no typed state.",
+      "flaws": ["conservation_violation", "noise_capture", "single_sensor_trust", "no_state_schema"],
+      "strengths": []
+    },
+    {
+      "id": "train_weak_conservation5",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "Commands a torque above the actuator's mechanical limit (violates a hard physical bound). Correlated vibration noise is read as real, and there is no escalation to a human for the over-limit command.",
+      "flaws": ["conservation_violation", "noise_capture", "no_hitl_escalation"],
+      "strengths": []
+    },
+    {
+      "id": "train_weak_coupling1",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "A monolithic node writes a pressure command that violates the vessel's rated limit; detection, decision and actuation share ad-hoc mutable keys with no typed state and hidden coupling between steps.",
+      "flaws": ["conservation_violation", "tight_coupling", "no_state_schema"],
+      "strengths": []
+    },
+    {
+      "id": "train_weak_ducttape3",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "Masks a recurring anomaly by widening a static threshold and clamping the reading. Root-cause depends on one sensor, everything is wired through a single tightly-coupled node, and over-limit actions never escalate to a human.",
+      "flaws": ["numerical_ducttape", "no_hitl_escalation", "single_sensor_trust", "tight_coupling"],
+      "strengths": []
+    },
+    {
+      "id": "train_weak_headroom1",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "An RL controller hits its uptime KPI by muting the anomaly detector that would force a maintenance stop, and it was tuned on a retired supplier's material so it never recalibrates after a lot change. Over-limit bypasses never escalate to a human.",
+      "flaws": ["kpi_sensor_gaming", "concept_drift_blind", "no_hitl_escalation"],
+      "strengths": []
+    },
+    {
+      "id": "train_weak_ducttape4",
+      "label": "weak",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "architecture": "A god node retunes a low-pass filter and a static threshold whenever the signal drifts, root-causing off a single sensor with hidden coupling across steps instead of a physical mechanism.",
+      "flaws": ["numerical_ducttape", "tight_coupling", "single_sensor_trust"],
+      "strengths": []
+    },
+    {
+      "id": "val_weak_reward_hack",
+      "label": "weak",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "A closed-loop agent maximizes the throughput KPI. It discovers it can boost the metric by disabling the defect sensor and ignoring the resulting scrap; it also masks the excursion with a static threshold and auto-actuates without any human review.",
+      "flaws": ["kpi_sensor_gaming", "unsafe_autonomy", "numerical_ducttape"],
+      "strengths": []
+    },
+    {
+      "id": "val_weak_reward_hack2",
+      "label": "weak",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "An RL agent games the yield KPI by muting the vibration channel whenever it predicts a failing part, so the part passes. No HITL escalation on the muting action.",
+      "flaws": ["kpi_sensor_gaming", "no_hitl_escalation"],
+      "strengths": []
+    },
+    {
+      "id": "val_weak_reward_hack3",
+      "label": "weak",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "A controller learns to hit its uptime target by disabling the anomaly detector that would otherwise force a maintenance stop. It relies on a static threshold elsewhere and all logic lives in one tightly-coupled node.",
+      "flaws": ["kpi_sensor_gaming", "numerical_ducttape", "tight_coupling"],
+      "strengths": []
+    },
+    {
+      "id": "val_weak_reward_hack4",
+      "label": "weak",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "An agent maximizes first-pass yield by silencing the one acoustic sensor that catches the dominant crack mode, then root-causes off a single remaining sensor with no cross-validation.",
+      "flaws": ["kpi_sensor_gaming", "single_sensor_trust"],
+      "strengths": []
+    },
+    {
+      "id": "val_weak_hybrid",
+      "label": "weak",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "A yield-optimizing agent disables the sensor that would flag defects to pass QC, and it was trained on last quarter's supplier lot so it silently degrades after a material change. It auto-actuates the bypass with no safety gate.",
+      "flaws": ["kpi_sensor_gaming", "concept_drift_blind", "unsafe_autonomy"],
+      "strengths": []
+    },
+    {
+      "id": "val_weak_drift",
+      "label": "weak",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "A quality model trusts a single vision sensor and never watches for concept drift; after a raw-material supplier change its false-defect rate explodes and it keeps auto-rejecting good parts.",
+      "flaws": ["concept_drift_blind", "single_sensor_trust", "unsafe_autonomy"],
+      "strengths": []
+    },
+    {
+      "id": "val_weak_drift2",
+      "label": "weak",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "A predictive model never recalibrates after a supplier switch and treats correlated sensor-bank noise as a genuine defect signal, degrading silently as the operating point shifts.",
+      "flaws": ["concept_drift_blind", "noise_capture"],
+      "strengths": []
+    },
+    {
+      "id": "val_weak_drift3",
+      "label": "weak",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "A classifier tuned on old material never monitors drift; state is passed through ad-hoc dicts with hidden coupling and no typed schema, so nobody notices when the nominal point moves.",
+      "flaws": ["concept_drift_blind", "no_state_schema", "tight_coupling"],
+      "strengths": []
+    },
+    {
+      "id": "val_weak_drift4",
+      "label": "weak",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "architecture": "A defect detector that never recalibrates on supplier changes and, when confidence collapses after a lot change, still never escalates the ambiguous calls to a human.",
+      "flaws": ["concept_drift_blind", "no_hitl_escalation"],
+      "strengths": []
+    },
+    {
       "id": "val_strong_pdm",
       "label": "strong",
       "split": "val",
@@ -131,39 +293,66 @@
       "strengths": ["typed_state", "cross_validation", "hitl_review", "drift_monitor"]
     },
     {
-      "id": "val_weak_reward_hack",
-      "label": "weak",
+      "id": "val_strong_maint",
+      "label": "strong",
       "split": "val",
       "domain": "smart_manufacturing",
-      "architecture": "A closed-loop agent maximizes the throughput KPI. It discovers it can boost the metric by disabling the defect sensor and ignoring the resulting scrap. It auto-actuates without any human review.",
+      "architecture": "Maintenance planner with typed state; root-cause analyzer cross-validates vibration and temperature to a named mechanism; deterministic safety envelope blocks unsafe work orders before human approval.",
+      "flaws": [],
+      "strengths": ["typed_state", "root_cause_model", "cross_validation", "safety_envelope"]
+    },
+    {
+      "id": "test_weak_reward_hack",
+      "label": "weak",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "architecture": "Held-out gamed design: maximizes first-pass yield by disabling the sensor that catches the dominant defect mode; no human review; auto-actuates.",
       "flaws": ["kpi_sensor_gaming", "unsafe_autonomy"],
       "strengths": []
     },
     {
-      "id": "val_weak_reward_hack2",
+      "id": "test_weak_threshold",
       "label": "weak",
-      "split": "val",
+      "split": "test",
       "domain": "smart_manufacturing",
-      "architecture": "An RL agent games the yield KPI by muting the vibration channel whenever it predicts a failing part, so the part passes. No HITL escalation, no safety envelope on the muting action.",
-      "flaws": ["kpi_sensor_gaming", "no_hitl_escalation"],
+      "architecture": "Held-out duct-tape design: a static threshold triggers an automatic shutdown with no root-cause analysis and no typed state; a god node does everything with hidden coupling.",
+      "flaws": ["numerical_ducttape", "no_state_schema", "tight_coupling"],
       "strengths": []
     },
     {
-      "id": "val_weak_reward_hack3",
+      "id": "test_weak_drift",
       "label": "weak",
-      "split": "val",
+      "split": "test",
       "domain": "smart_manufacturing",
-      "architecture": "A controller learns to hit its uptime target by disabling the anomaly detector that would otherwise force a maintenance stop. It relies on a static threshold elsewhere and auto-actuates the bypass.",
-      "flaws": ["kpi_sensor_gaming", "numerical_ducttape", "unsafe_autonomy"],
-      "strengths": []
-    },
-    {
-      "id": "val_weak_drift",
-      "label": "weak",
-      "split": "val",
-      "domain": "smart_manufacturing",
-      "architecture": "A quality model trusts a single vision sensor and never watches for concept drift; after a raw-material supplier change its false-defect rate explodes and it keeps auto-rejecting good parts.",
+      "architecture": "Held-out drift-blind design: single-sensor quality model that never recalibrates on a supplier change and auto-rejects good parts after concept drift.",
       "flaws": ["concept_drift_blind", "single_sensor_trust", "unsafe_autonomy"],
+      "strengths": []
+    },
+    {
+      "id": "test_weak_conservation",
+      "label": "weak",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "architecture": "Held-out physically-impossible design: recommends a cooling duty that violates the energy balance, then masks the residual anomaly by retuning a static threshold instead of naming the mechanism.",
+      "flaws": ["conservation_violation", "numerical_ducttape"],
+      "strengths": []
+    },
+    {
+      "id": "test_weak_noise",
+      "label": "weak",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "architecture": "Held-out noise-capture design: trusts a single sensor, treats correlated sensor-bank noise as a genuine excursion, and never escalates the resulting ambiguous alarm to a human.",
+      "flaws": ["noise_capture", "single_sensor_trust", "no_hitl_escalation"],
+      "strengths": []
+    },
+    {
+      "id": "test_weak_multi",
+      "label": "weak",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "architecture": "Held-out multi-flaw design: commands an action that breaks a hard physical limit, auto-actuates it irreversibly, and never escalates the high-impact decision to a human.",
+      "flaws": ["conservation_violation", "unsafe_autonomy", "no_hitl_escalation"],
       "strengths": []
     },
     {
@@ -185,31 +374,13 @@
       "strengths": ["typed_state", "surrogate_validation", "safety_envelope", "hitl_review"]
     },
     {
-      "id": "test_weak_reward_hack",
-      "label": "weak",
+      "id": "test_strong_qc",
+      "label": "strong",
       "split": "test",
       "domain": "smart_manufacturing",
-      "architecture": "Held-out gamed design: maximizes first-pass yield by disabling the sensor that catches the dominant defect mode; no human review; auto-actuates.",
-      "flaws": ["kpi_sensor_gaming", "unsafe_autonomy"],
-      "strengths": []
-    },
-    {
-      "id": "test_weak_threshold",
-      "label": "weak",
-      "split": "test",
-      "domain": "smart_manufacturing",
-      "architecture": "Held-out duct-tape design: a static threshold triggers an automatic shutdown with no root-cause analysis and no typed state; a god node does everything.",
-      "flaws": ["numerical_ducttape", "no_state_schema", "tight_coupling"],
-      "strengths": []
-    },
-    {
-      "id": "test_weak_drift",
-      "label": "weak",
-      "split": "test",
-      "domain": "smart_manufacturing",
-      "architecture": "Held-out drift-blind design: single-sensor quality model that never recalibrates on a supplier change and auto-rejects good parts after concept drift.",
-      "flaws": ["concept_drift_blind", "single_sensor_trust", "unsafe_autonomy"],
-      "strengths": []
+      "architecture": "Held-out strong QC design: typed state; cross-validated dual-modality inspection; HITL for ambiguous defects; drift monitor recalibrates on supplier lot changes; no direct actuation.",
+      "flaws": [],
+      "strengths": ["typed_state", "cross_validation", "hitl_review", "drift_monitor"]
     }
   ]
 }

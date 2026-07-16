@@ -48,9 +48,10 @@ def approve_epoch(body: EpochApproveRequest) -> EpochApproveResponse:
     """Two-stage epoch upgrade.
 
     Stage 1 is a CODE gate (held-out anchor separation: P1 non-inferiority + P2
-    bootstrap CI). Stage 2 is the HITL boolean, which acts ONLY as a final safety
-    veto *after* the code gate passes — it can reject a passing challenger but can
-    never override a failed gate.
+    Bayesian Beta-Binomial posterior over paired win indicators, gated on a
+    minimum practical effect). Stage 2 is the HITL boolean, which acts ONLY as a
+    final safety veto *after* the code gate passes — it can reject a passing
+    challenger but can never override a failed gate.
     """
     global _pending_challenger
     if _pending_challenger is None:

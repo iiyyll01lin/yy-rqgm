@@ -222,7 +222,7 @@ class EpochApproveResponse(BaseModel):
     applied: bool
     champion_version: str = ""
     # Two-stage gate transparency (needed by the epoch-admin UI + report):
-    #   gate  = code-gate result (P1 non-inferiority + P2 bootstrap CI);
+    #   gate  = code-gate result (P1 non-inferiority + P2 Bayesian posterior/MDE);
     #   hitl  = whether the human was consulted / approved / vetoed;
     #   *_exploitation = RQGM hack-ratio + tolerance state.
     gate: dict = Field(default_factory=dict)
