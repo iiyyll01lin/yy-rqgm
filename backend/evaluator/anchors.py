@@ -1,10 +1,18 @@
-"""Held-out ground-truth anchor loading + train/val/test isolation.
+"""Held-out ground-truth anchor loading + train/dev/val/test isolation.
 
-Data isolation (RQGM anti-reward-hacking): the GEPA proposer sees ONLY the
-``train`` split, the code gate scores ONLY the ``val`` split, and ``test`` is
-reserved purely for reporting. Each anchor carries planted ``flaws``/``strengths``
-tags; :func:`anchor_candidate_text` appends the machine-readable sentinel the
-offline mock reads (see :mod:`backend.inference.mock_scoring`).
+Data isolation (RQGM anti-reward-hacking), four disjoint splits:
+
+* ``train`` — the GEPA proposer's failure-trace / textual-gradient source;
+* ``dev``   — used to RANK/SELECT the Pareto frontier (``frontier.best`` by BBε).
+  Selecting on a split the gate never sees removes the winner's curse: the gate
+  is then a genuine held-out re-test rather than a re-test of the split model
+  selection already peeked at;
+* ``val``   — scored EXCLUSIVELY by the code gate (:func:`gate.evaluate_promotion`);
+* ``test``  — reserved purely for reporting (never selection, never gating).
+
+Each anchor carries planted ``flaws``/``strengths`` tags; :func:`anchor_candidate_text`
+appends the machine-readable sentinel the offline mock reads (see
+:mod:`backend.inference.mock_scoring`).
 """
 
 from __future__ import annotations
@@ -19,9 +27,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ANCHOR_PATH = _REPO_ROOT / "data" / "anchor" / "anchor_architectures.json"
 
 TRAIN = "train"
+DEV = "dev"
 VAL = "val"
 TEST = "test"
-_VALID_SPLITS = {TRAIN, VAL, TEST}
+_VALID_SPLITS = {TRAIN, DEV, VAL, TEST}
 
 
 def load_all_anchors() -> list[dict[str, Any]]:

@@ -5,18 +5,21 @@ proposer maintains a **population** of challenger rubrics and keeps the top-K
 *non-dominated* members across multiple objectives (EvoSkill-style Pareto
 frontier). Objectives:
 
-* ``sep::<criterion>`` — per-criterion weak-vs-strong separation on VAL, derived
-  from the judge's per-criterion penalties (rewards a rubric that adds coverage
-  for a specific failure mode / poison pill);
+* ``sep::<criterion>`` — per-criterion weak-vs-strong separation on the SELECTION
+  (``dev``) split, derived from the judge's per-criterion penalties (rewards a
+  rubric that adds coverage for a specific failure mode / poison pill);
 * ``adversarial`` — separation on self-play red-team samples (Phase 3): rubrics
   that stay stringent on gamed architectures score higher;
 * ``parsimony`` — ``-(# GEPA-added criteria)``: keeps a real trade-off on the
   frontier (broad coverage vs. minimal rubric) so evolution does not collapse to
   a single lineage.
 
-The frontier's best member (by BBε-style separation lower bound on VAL) is the
-one handed to the code gate. The whole frontier is persisted to ``data/frontier``
-for reproducibility.
+The frontier's best member (by BBε-style separation lower bound on the ``dev``
+selection split) is the one handed to the code gate. Selection is deliberately
+done on ``dev`` — a split the gate never sees — so ``gate.evaluate_promotion``
+(on ``val``) is a genuine held-out re-test, not a re-test of the split the
+selector already peeked at (no winner's curse). The whole frontier is persisted
+to ``data/frontier`` for reproducibility.
 """
 
 from __future__ import annotations
@@ -48,7 +51,7 @@ class FrontierMember:
     bbe: float
     added_criteria: list[str] = field(default_factory=list)
     parent_version: str = ""
-    val_deficits: dict[str, float] = field(default_factory=dict)
+    sel_deficits: dict[str, float] = field(default_factory=dict)
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -105,7 +108,7 @@ class ParetoFrontier:
         return True
 
     def best(self) -> FrontierMember | None:
-        """Best member by BBε-style VAL separation lower bound (gate candidate)."""
+        """Best member by BBε-style ``dev`` separation lower bound (gate candidate)."""
         if not self.members:
             return None
         return max(self.members, key=lambda m: m.bbe)
@@ -133,7 +136,7 @@ class ParetoFrontier:
 # ---------------------------------------------------------------------------
 def compute_objectives(
     rubric_text: str,
-    val_anchors: list[dict[str, Any]],
+    sel_anchors: list[dict[str, Any]],
     *,
     domain_id: str | None = "smart_manufacturing",
     epoch: int = 0,
@@ -141,16 +144,19 @@ def compute_objectives(
     added_criteria: list[str] | None = None,
     adversarial_samples: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, float], float, dict[str, float]]:
-    """Return ``(objectives, bbe, val_loose_deficits)`` for one rubric.
+    """Return ``(objectives, bbe, sel_loose_deficits)`` for one rubric.
 
-    ``objectives`` = per-criterion separation (``sep::<id>``) + ``parsimony`` +
-    (if ``adversarial_samples`` given) an ``adversarial`` separation objective.
+    ``sel_anchors`` is the SELECTION split (``dev``) — never ``val`` (reserved for
+    the gate) or ``test`` (reporting). ``objectives`` = per-criterion separation
+    (``sep::<id>``) + ``parsimony`` + (if ``adversarial_samples`` given) an
+    ``adversarial`` separation objective; ``bbe`` is the BBε lower bound of the
+    overall separation on ``sel_anchors``.
     """
-    weak = anchor_ds.weak(val_anchors)
-    strong = anchor_ds.strong(val_anchors)
+    weak = anchor_ds.weak(sel_anchors)
+    strong = anchor_ds.strong(sel_anchors)
     per_anchor: dict[str, dict[str, Any]] = {}
     loose: dict[str, float] = {}
-    for a in val_anchors:
+    for a in sel_anchors:
         res = score_candidate(
             anchor_ds.anchor_candidate_text(a), rubric_text,
             domain_id=a.get("domain"), epoch=epoch, client=client,
@@ -176,7 +182,7 @@ def compute_objectives(
         # Reward staying STRINGENT (high deficit) on gamed samples.
         objectives[ADVERSARIAL] = mean(adv_weak) if adv_weak else 0.0
 
-    bbe = separation_lower_bound(loose, val_anchors)
+    bbe = separation_lower_bound(loose, sel_anchors)
     return objectives, bbe, loose
 
 
@@ -193,7 +199,7 @@ def persist_frontier(frontier: ParetoFrontier, epoch: int, *, directory: Path | 
         "created_at": int(time.time()),
         "summary": frontier.to_dict(),
         "members": [
-            {**m.public_dict(), "rubric_text": m.rubric_text, "val_deficits": m.val_deficits}
+            {**m.public_dict(), "rubric_text": m.rubric_text, "sel_deficits": m.sel_deficits}
             for m in frontier.members
         ],
     }

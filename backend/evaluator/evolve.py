@@ -342,19 +342,22 @@ def gepa_evolve(
 ) -> ParetoFrontier:
     """GEPA budget loop over a Pareto frontier (docs/03-evaluator.md §5 skeleton).
 
-    From the frontier, stochastically sample a parent, pick a train trace the
-    parent misjudges, reflect→mutate, score the child on VAL (multi-objective +
-    BBε), and keep it only if non-dominated. VAL/TEST are never used to *drive*
-    mutation — only the TRAIN split and the (self-play) adversarial pool are.
+    From the frontier, stochastically sample a parent, pick a TRAIN trace the
+    parent misjudges, reflect→mutate, score the child on the ``dev`` SELECTION
+    split (multi-objective + BBε), and keep it only if non-dominated. Selection
+    is on ``dev`` so ``val`` stays untouched for the gate (no winner's curse):
+    ``val`` is scored ONLY by :func:`gate.evaluate_promotion`, and ``test`` is
+    reporting-only. Only ``train`` and the (self-play) adversarial pool ever
+    *drive* mutation.
     """
     client = client or get_lemonade_client()
-    val_anchors = load_anchors(anchor_ds.VAL)
+    dev_anchors = load_anchors(anchor_ds.DEV)
     train_weak = anchor_ds.weak(load_anchors(anchor_ds.TRAIN))
     rng = random.Random(seed)
 
     frontier = ParetoFrontier(top_k=top_k)
     inc_obj, inc_bbe, inc_def = frontier_mod.compute_objectives(
-        incumbent_text, val_anchors, domain_id=domain_id, epoch=epoch,
+        incumbent_text, dev_anchors, domain_id=domain_id, epoch=epoch,
         client=client, added_criteria=[], adversarial_samples=adversarial_samples,
     )
     frontier.add(
@@ -362,7 +365,7 @@ def gepa_evolve(
             version=versioning.get_champion_version(),
             rubric_text=incumbent_text,
             objectives=inc_obj, bbe=inc_bbe, added_criteria=[],
-            parent_version="", val_deficits=inc_def,
+            parent_version="", sel_deficits=inc_def,
         )
     )
 
@@ -377,13 +380,13 @@ def gepa_evolve(
             continue  # reject malformed mutations (Phase 0 XML validation)
         added = _gepa_added_criteria(child_text)
         obj, bbe, defs = frontier_mod.compute_objectives(
-            child_text, val_anchors, domain_id=domain_id, epoch=epoch,
+            child_text, dev_anchors, domain_id=domain_id, epoch=epoch,
             client=client, added_criteria=added, adversarial_samples=adversarial_samples,
         )
         frontier.add(
             FrontierMember(
                 version=child_version, rubric_text=child_text, objectives=obj, bbe=bbe,
-                added_criteria=added, parent_version=parent.version, val_deficits=defs,
+                added_criteria=added, parent_version=parent.version, sel_deficits=defs,
             )
         )
     return frontier
@@ -422,11 +425,14 @@ def propose_via_frontier(
             fromfile=f"{champion_version}.xml", tofile=f"{best.version}.xml", n=2,
         )
     )
-    val_anchors = load_anchors(anchor_ds.VAL)
-    champion_sep = _separation(_score_anchors(champion_text, epoch, client, val_anchors), val_anchors)
-    challenger_sep = _separation(best.val_deficits, val_anchors)
+    # Report the proposal's separation on the SELECTION (dev) split. The held-out
+    # VAL split is reserved for gate.evaluate_promotion (no selection leak), so we
+    # never compute the challenger's val separation here.
+    dev_anchors = load_anchors(anchor_ds.DEV)
+    champion_sep = _separation(_score_anchors(champion_text, epoch, client, dev_anchors), dev_anchors)
+    challenger_sep = _separation(best.sel_deficits, dev_anchors)
     metrics = {
-        "split": "val",
+        "split": "dev",
         "frontier_size": len(frontier.members),
         "added_criteria": best.added_criteria,
         "champion_separation": round(champion_sep, 4),
@@ -434,7 +440,7 @@ def propose_via_frontier(
         "separation_delta": round(challenger_sep - champion_sep, 4),
         "bbe_lower_bound": round(best.bbe, 4),
         "objectives": {k: round(v, 4) for k, v in best.objectives.items()},
-        "note": "best of the Pareto frontier on VAL by BBε lower bound; the code gate re-checks.",
+        "note": "best of the Pareto frontier on the dev selection split by BBε lower bound; the code gate re-checks on the held-out val split.",
     }
     versioning.register_challenger(
         version=best.version, rubric_text=best.rubric_text, metrics=metrics, parent_version=champion_version
@@ -448,7 +454,7 @@ def propose_via_frontier(
         version=best.version,
         parent_version=champion_version,
         epoch_id=epoch,
-        reflection="GEPA Pareto frontier search: promoted the non-dominated best by anchor BBε.",
+        reflection="GEPA Pareto frontier search: promoted the non-dominated best by dev-split BBε (val reserved for the gate).",
         proposed_changes=[f"Added criteria: {', '.join(best.added_criteria) or '(none)'}"],
         new_criteria=[{"id": c, "text": ""} for c in best.added_criteria],
         rubric_text=best.rubric_text,
@@ -473,9 +479,10 @@ def evaluate_promotion(
 
     Two independent signals, both on held-out anchors the proposer never saw:
 
-    * **Separation gate** (``gate.evaluate_promotion``, VAL split): P1
-      non-inferiority (tie favours incumbent) + P2 paired-bootstrap CI lower
-      bound > 0.
+    * **Separation gate** (``gate.evaluate_promotion``, held-out VAL split): P1
+      non-inferiority (tie favours incumbent) + P2 Bayesian Beta-Binomial
+      posterior ``P(Δsep>0) >= threshold`` AND effect ``Δsep >= MDE``. VAL is
+      scored only here (the frontier selects on the disjoint ``dev`` split).
     * **RQGM hack-ratio** (``rqgm_adapter``): does the *champion* have a
       poison-pill blind spot (loose passes what strict fails)? If so, tolerances
       tighten and adversarial injection is flagged for the next round. We also
