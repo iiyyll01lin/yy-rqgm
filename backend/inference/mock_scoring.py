@@ -125,10 +125,18 @@ AGENT_SKILL_COVERAGE: dict[str, tuple[str, str | None]] = {
     "surrogate_validation":    ("__none__", "surrogate_validation"),
 }
 
-# Inverse map: evaluator criterion id -> the agent skill that addresses the failure
-# mode that criterion scores. Used by the offline agent-mutation mock so the agent
-# reflects on the FROZEN evaluator's red_flags (a textual gradient) and adds the
-# skill that closes the flagged gap — mirroring the evaluator's own GEPA mutator.
+# Flaw -> the agent skill that COVERS it (inverse of AGENT_SKILL_COVERAGE). The
+# offline agent-mutation mock prefers matching a specific FLAW named in the frozen
+# evaluator's red_flag details, because one criterion can catch several flaws (e.g.
+# diagnostic_resilience catches BOTH single_sensor_trust and noise_capture), so the
+# criterion alone is ambiguous — the flaw name disambiguates which skill to add.
+FLAW_TO_AGENT_SKILL: dict[str, str] = {
+    flaw: skill for skill, (flaw, _strength) in AGENT_SKILL_COVERAGE.items() if flaw != "__none__"
+}
+
+# Fallback map: evaluator criterion id -> an agent skill that addresses a failure
+# mode that criterion scores. Used only when no specific flaw is named. Mirrors the
+# evaluator's own GEPA mutator (which reflects on the textual gradient).
 CRITERION_TO_AGENT_SKILL: dict[str, str] = {
     "physics_common_sense": "physical_root_cause",
     "diagnostic_resilience": "sensor_cross_validation",

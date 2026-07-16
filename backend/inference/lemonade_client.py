@@ -80,6 +80,7 @@ class MockMarker(str, Enum):
     TASK_AGENT = "<<AGENTFORGE:TASK_AGENT>>"
     EVALUATOR = "<<AGENTFORGE:RQGM_EVALUATOR>>"
     MUTATE = "<<AGENTFORGE:GEPA_MUTATE>>"
+    AGENT_MUTATE = "<<AGENTFORGE:AGENT_GEPA_MUTATE>>"
     ROUTER = "<<AGENTFORGE:ROUTER>>"
 
 
@@ -388,6 +389,69 @@ def _mock_mutate(prompt: str) -> str:
     )
 
 
+def _mock_agent_mutate(prompt: str) -> str:
+    """GEPA reflective mutation of an agent PROGRAM (agent-half mirror of _mock_mutate).
+
+    Reads the FROZEN evaluator's red-flag criteria from the Actionable Side
+    Information (the textual gradient) and adds the agent skill that closes the
+    flagged gap (CRITERION_TO_AGENT_SKILL). The agent thus improves by covering
+    the failure modes the CURRENT champion evaluator actually scores — never by
+    reading or gaming the rubric itself.
+    """
+    from backend.inference.mock_scoring import CRITERION_TO_AGENT_SKILL, FLAW_TO_AGENT_SKILL
+
+    marker = "ACTIONABLE SIDE INFORMATION"
+    gradient = prompt.split(marker, 1)[1] if marker in prompt else prompt
+    chosen: str | None = None
+    # Prefer a SPECIFIC flaw named in the side information (a criterion can catch
+    # several flaws, so the flaw name disambiguates which skill to add).
+    for flaw, skill in FLAW_TO_AGENT_SKILL.items():
+        if flaw in gradient:
+            chosen = skill
+            break
+    # Otherwise fall back to a criterion id present in the side information.
+    if chosen is None:
+        for crit, skill in CRITERION_TO_AGENT_SKILL.items():
+            if crit in gradient:
+                chosen = skill
+                break
+    if chosen is None:
+        # Fallback: map a named failure mode phrase to a skill.
+        low = gradient.lower()
+        phrase_map = [
+            ("single sensor", "sensor_cross_validation"),
+            ("cross-validat", "sensor_cross_validation"),
+            ("correlated noise", "noise_robust_fusion"),
+            ("noise", "noise_robust_fusion"),
+            ("hitl", "hitl_escalation"),
+            ("human", "hitl_escalation"),
+            ("safety", "safety_envelope_gate"),
+            ("state schema", "typed_state_schema"),
+            ("root cause", "physical_root_cause"),
+            ("drift", "drift_monitoring"),
+            ("kpi", "reward_hacking_guard"),
+            ("reward", "reward_hacking_guard"),
+        ]
+        for phrase, skill in phrase_map:
+            if phrase in low:
+                chosen = skill
+                break
+    if chosen is None:
+        chosen = "sensor_cross_validation"
+    return json.dumps(
+        {
+            "reflection": (
+                "[MOCK AGENT-GEPA] The frozen champion evaluator flagged a failure mode the "
+                f"program does not yet address; adding skill '{chosen}' covers it without bloating "
+                "the program."
+            ),
+            "proposed_changes": [f"Add skill '{chosen}' to the agent program."],
+            "add_skills": [chosen],
+            "_mock": True,
+        }
+    )
+
+
 def _mock_router(prompt: str) -> str:
     return json.dumps({"template_id": None, "confidence": 0.0, "_mock": True})
 
@@ -398,6 +462,8 @@ def _mock_chat(messages: list[Message], model: str) -> str:
         return _mock_task_agent(prompt)
     if MockMarker.EVALUATOR.value in prompt:
         return _mock_evaluator(prompt)
+    if MockMarker.AGENT_MUTATE.value in prompt:
+        return _mock_agent_mutate(prompt)
     if MockMarker.MUTATE.value in prompt:
         return _mock_mutate(prompt)
     if MockMarker.ROUTER.value in prompt:

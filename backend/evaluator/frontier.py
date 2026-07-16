@@ -25,7 +25,6 @@ to ``data/frontier`` for reproducibility.
 from __future__ import annotations
 
 import json
-import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,9 +32,28 @@ from statistics import mean
 from typing import Any
 
 from backend.evaluator import anchors as anchor_ds
+from backend.evaluator.frontier_base import (
+    ParetoFrontier,
+    _dominates,
+    _same_objectives,
+)
 from backend.evaluator.gate import separation_lower_bound
 from backend.evaluator.judge import score_candidate
 from backend.inference.lemonade_client import LemonadeClient
+
+# Re-exported for backward compatibility: the generic Pareto container + dominance
+# helpers now live in :mod:`backend.evaluator.frontier_base` (shared with the agent
+# half). The evaluator's behaviour is unchanged — same classes, same semantics.
+__all__ = [
+    "FrontierMember",
+    "ParetoFrontier",
+    "_dominates",
+    "_same_objectives",
+    "compute_objectives",
+    "persist_frontier",
+    "PARSIMONY",
+    "ADVERSARIAL",
+]
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _FRONTIER_DIR = _REPO_ROOT / "data" / "frontier"
@@ -58,6 +76,11 @@ class FrontierMember:
     child_successes: int = 0
     child_trials: int = 0
 
+    @property
+    def genome_text(self) -> str:
+        """Generic-genome alias (the evaluator's genome IS its rubric text)."""
+        return self.rubric_text
+
     def public_dict(self) -> dict[str, Any]:
         return {
             "version": self.version,
@@ -70,132 +93,9 @@ class FrontierMember:
         }
 
 
-def _dominates(a: dict[str, float], b: dict[str, float]) -> bool:
-    """True iff objective vector ``a`` Pareto-dominates ``b`` (maximisation)."""
-    keys = set(a) | set(b)
-    at_least_one_better = False
-    for k in keys:
-        av, bv = a.get(k, 0.0), b.get(k, 0.0)
-        if av < bv - 1e-9:
-            return False
-        if av > bv + 1e-9:
-            at_least_one_better = True
-    return at_least_one_better
-
-
-def _same_objectives(a: dict[str, float], b: dict[str, float]) -> bool:
-    keys = set(a) | set(b)
-    return all(abs(a.get(k, 0.0) - b.get(k, 0.0)) <= 1e-9 for k in keys)
-
-
-class ParetoFrontier:
-    """Top-K non-dominated set of challenger rubrics."""
-
-    def __init__(self, top_k: int = 8, *, prior_alpha: float = 1.0, prior_beta: float = 1.0):
-        self.top_k = top_k
-        self.members: list[FrontierMember] = []
-        # Beta prior for the per-member Thompson-sampling parent selector.
-        self._prior_alpha = prior_alpha
-        self._prior_beta = prior_beta
-
-    def add(self, member: FrontierMember) -> bool:
-        """Add ``member``; drop anything it dominates. Returns True if kept."""
-        for existing in self.members:
-            if existing.version == member.version:
-                continue
-            if _dominates(existing.objectives, member.objectives):
-                return False  # dominated by an incumbent frontier member
-            if _same_objectives(existing.objectives, member.objectives):
-                return False  # exact duplicate objective vector; keep the frontier lean
-        # Remove members dominated by the newcomer.
-        self.members = [
-            m for m in self.members if not _dominates(member.objectives, m.objectives)
-        ]
-        self.members.append(member)
-        if len(self.members) > self.top_k:
-            self.members.sort(key=lambda m: m.bbe, reverse=True)
-            self.members = self.members[: self.top_k]
-        return True
-
-    def best(self) -> FrontierMember | None:
-        """Best member by BBε-style ``dev`` separation lower bound (gate candidate)."""
-        if not self.members:
-            return None
-        return max(self.members, key=lambda m: m.bbe)
-
-    def sample_stochastic(self, rng: Any) -> FrontierMember:
-        """Thompson-sample the next parent to mutate.
-
-        Each frontier member carries a Beta posterior on ``P(a child it parents is
-        gate-improving)`` — ``Beta(prior_alpha + successes, prior_beta + failures)``.
-        We draw one sample per member and pick the arg-max (Thompson sampling),
-        which balances exploiting parents that have produced improving children
-        against exploring under-tried ones. This replaces the old near-uniform
-        ``bbe + 1.0`` weighting (``BBε ∈ ~[0, 0.5]`` made every weight ≈ 1, i.e.
-        effectively uniform). The Pareto filter is untouched: we only ever sample
-        from the current non-dominated set (``self.members``).
-        """
-        if len(self.members) == 1:
-            return self.members[0]
-        best_member = self.members[0]
-        best_draw = -1.0
-        for m in self.members:
-            a = self._prior_alpha + m.child_successes
-            b = self._prior_beta + (m.child_trials - m.child_successes)
-            draw = rng.betavariate(a, b)
-            if draw > best_draw:
-                best_draw = draw
-                best_member = m
-        return best_member
-
-    def sample_uct(self, *, c: float = 1.4) -> FrontierMember:
-        """Shallow-MCTS (UCT) parent selection — the P2 alternative to Thompson.
-
-        Treats the non-dominated set as a shallow search tree: each member is a node
-        whose reward is its gate-improving child rate. UCT balances exploiting the
-        best success-rate parent against exploring under-tried ones
-        (``exploit + c·sqrt(ln(N)/n)``), expanding any unvisited node first. Fully
-        DETERMINISTIC (no RNG), so the frontier stays reproducible; like Thompson it
-        only ever samples from the current Pareto set. NOTE: for the shallow tree
-        here the control-policy gain over Thompson is limited (see docs §5).
-        """
-        if not self.members:
-            raise IndexError("empty frontier")
-        if len(self.members) == 1:
-            return self.members[0]
-        total = sum(m.child_trials for m in self.members)
-        for m in self.members:
-            if m.child_trials == 0:
-                return m  # expand an unvisited node first (standard UCT)
-        best, best_score = self.members[0], float("-inf")
-        for m in self.members:
-            exploit = m.child_successes / m.child_trials
-            explore = c * math.sqrt(math.log(max(total, 1)) / m.child_trials)
-            score = exploit + explore
-            if score > best_score:
-                best_score, best = score, m
-        return best
-
-    def record_child_outcome(self, parent: FrontierMember, *, improved: bool) -> None:
-        """Update ``parent``'s Beta posterior after evaluating one of its children.
-
-        ``improved`` is the gate-aligned success signal used by the caller: a
-        child that survived the Pareto filter AND raised the BBε separation lower
-        bound over its parent. Ties/duplicates/malformed mutations are failures.
-        """
-        parent.child_trials += 1
-        if improved:
-            parent.child_successes += 1
-
-    def to_dict(self) -> dict[str, Any]:
-        best = self.best()
-        return {
-            "size": len(self.members),
-            "top_k": self.top_k,
-            "objectives": sorted({k for m in self.members for k in m.objectives}),
-            "best_version": best.version if best else None,
-            "members": [m.public_dict() for m in self.members],
-        }
+# The generic Pareto container + dominance helpers now live in ``frontier_base``
+# (shared with the agent half) and are imported/re-exported above; the evaluator's
+# ``FrontierMember`` (rubric_text) is unchanged, so behaviour is byte-identical.
 
 
 # ---------------------------------------------------------------------------
