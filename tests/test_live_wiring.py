@@ -180,6 +180,36 @@ def test_unreachable_server_falls_back_to_mock_without_hanging(monkeypatch):
     assert isinstance(client.chat("hello"), str)
 
 
+def test_live_embeddings_path_parses_and_falls_back(monkeypatch):
+    """The served /v1/embeddings path (LemonadeEmbedder) is parsed live, None offline."""
+    # Forced mock (the default test env) -> no network, embeddings unavailable.
+    assert LemonadeClient(force_mock=True).embeddings(["x"]) is None
+
+    class _EmbResp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):  # returned out of order to check index re-sorting
+            return {"data": [
+                {"index": 1, "embedding": [0.4, 0.5, 0.6]},
+                {"index": 0, "embedding": [0.1, 0.2, 0.3]},
+            ]}
+
+    seen: dict = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: A002
+        seen["url"], seen["input"] = url, json["input"]
+        return _EmbResp()
+
+    monkeypatch.setattr(lc.httpx, "post", fake_post)
+    monkeypatch.setattr(lc.httpx, "get", lambda url, headers=None, timeout=None: type("R", (), {"status_code": 200})())
+    client = LemonadeClient(base_url=_LIVE_BASE, force_mock=False)
+    out = client.embeddings(["a", "b"])
+    assert seen["url"].endswith("/embeddings") and seen["input"] == ["a", "b"]
+    # Rows are re-sorted by "index" so the vectors line up with the input order.
+    assert out == [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+
+
 # ---------------------------------------------------------------------------
 # 3) Structured judge output on the live path (fake transport, offline)
 # ---------------------------------------------------------------------------

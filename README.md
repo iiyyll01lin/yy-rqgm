@@ -247,6 +247,24 @@ uv run pytest                  # backend：102 passed, 2 skipped（deterministic
 cd frontend && npm run build   # frontend：type-check + production build
 ```
 
+### Live 驗證 runbook（需真 AMD GPU）
+
+平台預設跑 deterministic mock（離線、無 GPU）。要把「plumbing works」升級成「evidence works」，先在**真 AMD GPU** 上服務一個 OpenAI-compatible 模型（vLLM-ROCm 或 Lemonade），再跑 [`scripts/live_validate.sh`](scripts/live_validate.sh)：
+
+```bash
+# 1) 起本地模型（擇一）
+docker compose -f infra/docker-compose.rocm.yml up --build   # vLLM-ROCm on :8000
+export LEMONADE_BASE_URL=http://localhost:8000/v1
+#   或 Lemonade（Ryzen AI / Radeon）: export LEMONADE_BASE_URL=http://localhost:8020/api/v1
+
+# 2) 一鍵 runbook：離線驗接線 → 錄 cassette → 斷網 replay 重現 → 印 live 報告
+scripts/live_validate.sh
+```
+
+三步：① **離線**驗 live 接線（fake transport + cassette，**無 GPU 也會跑**，就是本 repo CI 能證明的部分）；② 有 server 才 `RQGM_RUN_LIVE=1 LEMONADE_CASSETTE_MODE=record uv run pytest -m live` 錄 cassette，再 `MODE=replay` 斷網重播確認 byte-for-byte 可重現；③ 印 `provenance` / val-test separation / judge κ / hack-ratio 供人工檢視。可選 live 開關：`AGENTFORGE_EMBEDDER=sentence-transformers|lemonade`（真 embedder）、`AGENTFORGE_SURROGATE=torch`（ROCm surrogate）、`AGENTFORGE_CROSS_MODEL=<model>`（跨家族 judge）。
+
+> **仍需真 AMD GPU（無法離線證明，誠實聲明）**：structured JSON / guided decoding 是否**真被服務端遵守**、strict/loose 的**真實分離品質**、judge κ vs **真人**標註、latency/throughput。本開發環境無 AMD GPU，故僅完成步驟 ①；步驟 ②③ 為待硬體執行的 runbook。
+
 ---
 
 ## 深入閱讀 (Deep Dive)
