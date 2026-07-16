@@ -243,6 +243,10 @@ class EpochReportResponse(BaseModel):
     rqgm_backend: str
     data_splits: dict = Field(default_factory=dict)
     separation: dict = Field(default_factory=dict)
+    # over_optimization = proxy(val)-gold(test) separation gap;
+    # over_acceptance   = fraction of gamed/weak adversarial samples scored strong.
+    over_optimization: dict = Field(default_factory=dict)
+    over_acceptance: dict = Field(default_factory=dict)
     hack_ratio: dict = Field(default_factory=dict)
     judge_agreement: dict = Field(default_factory=dict)
     frontier: dict = Field(default_factory=dict)

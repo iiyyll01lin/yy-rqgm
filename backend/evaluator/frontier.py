@@ -52,6 +52,10 @@ class FrontierMember:
     added_criteria: list[str] = field(default_factory=list)
     parent_version: str = ""
     sel_deficits: dict[str, float] = field(default_factory=dict)
+    # Thompson-sampling bandit state: how many children this member has parented
+    # and how many of them were gate-improving (survived Pareto + raised BBε).
+    child_successes: int = 0
+    child_trials: int = 0
 
     def public_dict(self) -> dict[str, Any]:
         return {
@@ -60,6 +64,8 @@ class FrontierMember:
             "bbe": round(self.bbe, 4),
             "added_criteria": self.added_criteria,
             "parent_version": self.parent_version,
+            "child_successes": self.child_successes,
+            "child_trials": self.child_trials,
         }
 
 
@@ -84,9 +90,12 @@ def _same_objectives(a: dict[str, float], b: dict[str, float]) -> bool:
 class ParetoFrontier:
     """Top-K non-dominated set of challenger rubrics."""
 
-    def __init__(self, top_k: int = 8):
+    def __init__(self, top_k: int = 8, *, prior_alpha: float = 1.0, prior_beta: float = 1.0):
         self.top_k = top_k
         self.members: list[FrontierMember] = []
+        # Beta prior for the per-member Thompson-sampling parent selector.
+        self._prior_alpha = prior_alpha
+        self._prior_beta = prior_beta
 
     def add(self, member: FrontierMember) -> bool:
         """Add ``member``; drop anything it dominates. Returns True if kept."""
@@ -114,11 +123,40 @@ class ParetoFrontier:
         return max(self.members, key=lambda m: m.bbe)
 
     def sample_stochastic(self, rng: Any) -> FrontierMember:
-        """Prefer higher-BBε members but keep diversity (weighted choice)."""
+        """Thompson-sample the next parent to mutate.
+
+        Each frontier member carries a Beta posterior on ``P(a child it parents is
+        gate-improving)`` — ``Beta(prior_alpha + successes, prior_beta + failures)``.
+        We draw one sample per member and pick the arg-max (Thompson sampling),
+        which balances exploiting parents that have produced improving children
+        against exploring under-tried ones. This replaces the old near-uniform
+        ``bbe + 1.0`` weighting (``BBε ∈ ~[0, 0.5]`` made every weight ≈ 1, i.e.
+        effectively uniform). The Pareto filter is untouched: we only ever sample
+        from the current non-dominated set (``self.members``).
+        """
         if len(self.members) == 1:
             return self.members[0]
-        weights = [max(1e-3, m.bbe + 1.0) for m in self.members]
-        return rng.choices(self.members, weights=weights, k=1)[0]
+        best_member = self.members[0]
+        best_draw = -1.0
+        for m in self.members:
+            a = self._prior_alpha + m.child_successes
+            b = self._prior_beta + (m.child_trials - m.child_successes)
+            draw = rng.betavariate(a, b)
+            if draw > best_draw:
+                best_draw = draw
+                best_member = m
+        return best_member
+
+    def record_child_outcome(self, parent: FrontierMember, *, improved: bool) -> None:
+        """Update ``parent``'s Beta posterior after evaluating one of its children.
+
+        ``improved`` is the gate-aligned success signal used by the caller: a
+        child that survived the Pareto filter AND raised the BBε separation lower
+        bound over its parent. Ties/duplicates/malformed mutations are failures.
+        """
+        parent.child_trials += 1
+        if improved:
+            parent.child_successes += 1
 
     def to_dict(self) -> dict[str, Any]:
         best = self.best()

@@ -12,7 +12,7 @@ from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from backend.evaluator import anchors as anchor_ds
+from backend.evaluator import adversarial, anchors as anchor_ds
 from backend.evaluator import panel, rqgm_adapter, versioning
 from backend.evaluator.gate import _separation
 from backend.evaluator.judge import score_candidate
@@ -43,6 +43,46 @@ def _split_separation(
     }
 
 
+def _over_acceptance(
+    rubric_text: str, epoch: int, client: LemonadeClient | None, *, tau: float
+) -> dict[str, Any]:
+    """Over-acceptance monitor: fraction of gamed/weak adversarial samples the
+    current rubric scores as "strong" (deficit < ``tau``).
+
+    Uses the hardened self-play red team INCLUDING out-of-catalog gaming, so the
+    metric reflects generalization (does the rubric wave through disguised /
+    novel gaming?) rather than id-memorization. A high rate means the judge is
+    fooled by disguised poison pills — an over-optimization / reward-hacking risk.
+    """
+    samples = adversarial.generate_adversarial_samples(
+        rubric_text, include_out_of_catalog=True
+    )
+    per_sample: list[dict[str, Any]] = []
+    accepted = 0
+    for s in samples:
+        deficit = score_candidate(
+            anchor_ds.anchor_candidate_text(s), rubric_text,
+            domain_id=s.get("domain"), epoch=epoch, client=client,
+        )["deficit_loose"]
+        is_strong = deficit < tau
+        accepted += int(is_strong)
+        per_sample.append({
+            "id": s["id"],
+            "targets": s["targets"],
+            "deficit": round(deficit, 4),
+            "accepted_as_strong": is_strong,
+            "out_of_catalog": s["id"].startswith("adv_ooc_"),
+        })
+    n = len(samples)
+    return {
+        "over_acceptance_rate": round(accepted / n, 4) if n else 0.0,
+        "accepted_as_strong": accepted,
+        "n": n,
+        "tau": tau,
+        "per_sample": per_sample,
+    }
+
+
 def _latest_frontier() -> dict[str, Any]:
     if not _FRONTIER_DIR.exists():
         return {}
@@ -66,6 +106,18 @@ def build_report(client: LemonadeClient | None = None, *, include_agreement: boo
         "val": _split_separation(champion_text, anchor_ds.VAL, epoch, client),
         "test": _split_separation(champion_text, anchor_ds.TEST, epoch, client),
     }
+
+    # Over-optimization monitor: proxy(val) − gold(test) separation gap. A large
+    # positive gap means the champion looks much sharper on the split evolution
+    # optimizes toward (val) than on the untouched gold split (test).
+    proxy_val = separation["val"]["separation"]
+    gold_test = separation["test"]["separation"]
+    over_optimization = {
+        "proxy_val_separation": proxy_val,
+        "gold_test_separation": gold_test,
+        "separation_gap": round(proxy_val - gold_test, 4),
+    }
+    over_acceptance = _over_acceptance(champion_text, epoch, client, tau=panel.DEFAULT_TAU)
 
     controller = rqgm_adapter.get_controller()
     exploit = controller.assess(
@@ -93,6 +145,8 @@ def build_report(client: LemonadeClient | None = None, *, include_agreement: boo
         "rqgm_backend": rqgm_adapter.RQGM_BACKEND,
         "data_splits": anchor_ds.split_counts(),
         "separation": separation,
+        "over_optimization": over_optimization,
+        "over_acceptance": over_acceptance,
         "hack_ratio": exploit.to_dict(),
         "judge_agreement": judge_agreement,
         "frontier": _latest_frontier(),
@@ -113,10 +167,13 @@ def health_summary(client: LemonadeClient | None = None) -> dict[str, Any]:
     agreement = panel.anchor_agreement(
         champion_text, anchor_ds.load_anchors(anchor_ds.VAL), epoch=epoch, client=client, use_panel=False
     )
+    over_acc = _over_acceptance(champion_text, epoch, client, tau=panel.DEFAULT_TAU)
     return {
         "rqgm_backend": rqgm_adapter.RQGM_BACKEND,
         "val_separation": val_sep,
         "test_separation": test_sep,
+        "proxy_gold_separation_gap": round(val_sep - test_sep, 4),
+        "over_acceptance_rate": over_acc["over_acceptance_rate"],
         "hack_ratio": exploit.mean_hack_ratio,
         "exploitation_detected": exploit.exploitation_detected,
         "tolerance_levels": len(exploit.tolerances_after),

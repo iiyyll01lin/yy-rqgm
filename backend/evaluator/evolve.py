@@ -377,18 +377,23 @@ def gepa_evolve(
         try:
             child_text = mutate_rubric_text(parent.rubric_text, new_criteria, child_version, epoch)
         except Exception:
+            frontier.record_child_outcome(parent, improved=False)  # malformed => failure
             continue  # reject malformed mutations (Phase 0 XML validation)
         added = _gepa_added_criteria(child_text)
         obj, bbe, defs = frontier_mod.compute_objectives(
             child_text, dev_anchors, domain_id=domain_id, epoch=epoch,
             client=client, added_criteria=added, adversarial_samples=adversarial_samples,
         )
-        frontier.add(
+        kept = frontier.add(
             FrontierMember(
                 version=child_version, rubric_text=child_text, objectives=obj, bbe=bbe,
                 added_criteria=added, parent_version=parent.version, sel_deficits=defs,
             )
         )
+        # Thompson-sampling feedback: a "success" for the parent is a child that
+        # survived the Pareto filter AND improved on the parent's BBε lower bound
+        # (the same separation signal the gate scores) — no gate call needed.
+        frontier.record_child_outcome(parent, improved=bool(kept and bbe > parent.bbe))
     return frontier
 
 
