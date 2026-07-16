@@ -122,7 +122,7 @@ flowchart TD
 |------|------|
 | **RQGM** | *The Red Queen Gödel Machine*（arXiv 2606.26294）的機制概念：把 search 切成 **epoch**，evaluator 在 epoch 內**凍結**；epoch 邊界時 challenger evaluator 唯有在 **held-out human ground-truth anchor** 上統計勝過 incumbent 才接手，接手後做 **selective erasure**。本平台只借用機制、**不使用其名作為產品名**。 |
 | **RSI** | *Recursive Self-Improvement*：系統遞迴地改進「改進自己的能力」。本平台把 RSI 限縮在 evaluator 的 rubric 上，且用 epoch freeze + HITL 把它*馴化*成可稽核。 |
-| **GEPA** | *Genetic-Pareto*（arXiv 2507.19457）：reflective prompt evolution，讀完整 execution trace 當「textual gradient」（Actionable Side Information），用 Pareto frontier 保多樣性；比 RL(GRPO) 少約 **35×** rollouts。本平台的 evaluator-evolution 引擎。 |
+| **GEPA** | *Genetic-Pareto*（arXiv 2507.19457）：reflective prompt evolution，讀完整 execution trace 當「textual gradient」（Actionable Side Information），用 Pareto frontier 保多樣性；比 RL(GRPO) 少約 **35×** rollouts。本平台的 evaluator-evolution 引擎。其 **System-Aware Merge**（frontier member 間 crossover）以 `evolve.system_aware_merge`（`gepa_evolve(crossover=True)`）**原生實作**；官方 `gepa` 套件離線不可得，評估後延後採用。 |
 | **DGM** | *Darwin Gödel Machine*（arXiv 2505.22954）：archive + open-ended evolution + 實證驗證。其 *80-iteration SWE-bench ≈ $22,000 / ~2 週* 的成本，是本平台把完整迴圈放 cold path 並主打 AMD memory TCO 的實證依據。 |
 | **Static Hardware Gatekeeper** | Deterministic 的物理閘門，用 `VRAM = Weights + KV + Activations` 與 `tokens/s ≈ BW / bytes_per_token` 判斷可行性。**永不進化**。 |
 | **RQGM Evaluator** | Fuzzy 的 domain 品味評審，用 XML deficit-scoring rubric 判「解法好不好」。**受控進化**。 |

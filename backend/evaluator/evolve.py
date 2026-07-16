@@ -323,6 +323,59 @@ def _gepa_added_criteria(rubric_text: str) -> list[str]:
     return _GEPA_CRITERION_ID_RE.findall(rubric_text)
 
 
+# ---------------------------------------------------------------------------
+# GEPA System-Aware Merge (crossover between frontier members) — p2-gepa-plus
+# ---------------------------------------------------------------------------
+# The official ``gepa`` PyPI engine offers a "System-Aware Merge": a crossover
+# that combines COMPLEMENTARY improvements from two Pareto-frontier members into
+# one child (rather than only single-lineage mutation). It is not installable in
+# this offline env (no wheel cached; adding it would pull a heavy dependency and
+# break the no-network default path), so we ADOPT THE CONCEPT natively here: union
+# the GEPA-added criteria of two frontier members into a merged child rubric. This
+# composes nicely with the multi-domain anchor set (members covering different
+# domains'/flaws' criteria merge into a broader-coverage rubric). Opt-in; the gate
+# is unaffected (it re-tests frontier.best() on the held-out val split).
+_GEPA_CRIT_BLOCK_RE = re.compile(
+    r'<criterion\b([^>]*?)\borigin="gepa"[^>]*>(.*?)</criterion>', re.DOTALL
+)
+
+
+def _extract_gepa_criteria(rubric_text: str) -> list[dict[str, Any]]:
+    """Extract ``{id, text, weight}`` for each GEPA-added criterion in a rubric."""
+    out: list[dict[str, Any]] = []
+    for attrs, body in _GEPA_CRIT_BLOCK_RE.findall(rubric_text):
+        idm = re.search(r'\bid="([^"]+)"', attrs)
+        if not idm:
+            continue
+        wm = re.search(r'\bweight="([^"]+)"', attrs)
+        try:
+            weight = float(wm.group(1)) if wm else 0.10
+        except ValueError:
+            weight = 0.10
+        out.append({"id": idm.group(1), "text": body.strip(), "weight": weight})
+    return out
+
+
+def system_aware_merge(
+    parent_a: FrontierMember,
+    parent_b: FrontierMember,
+    champion_text: str,
+    version: str,
+    epoch: int,
+) -> tuple[str, list[str]]:
+    """Crossover two frontier members: UNION their GEPA-added criteria into a child.
+
+    Returns ``(child_rubric_text, sorted_added_criterion_ids)``. De-duplicates by
+    criterion id (``mutate_rubric_text`` also dedups against the champion), so a
+    criterion both parents share is not doubled.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for c in _extract_gepa_criteria(parent_a.rubric_text) + _extract_gepa_criteria(parent_b.rubric_text):
+        merged.setdefault(c["id"], c)
+    child_text = mutate_rubric_text(champion_text, list(merged.values()), version, epoch)
+    return child_text, sorted(merged)
+
+
 def _select_failure_trace(
     parent_text: str,
     train_weak: list[dict[str, Any]],
@@ -365,6 +418,7 @@ def gepa_evolve(
     adversarial_samples: list[dict[str, Any]] | None = None,
     seed: int = 1234,
     strategy: str = "thompson",
+    crossover: bool = False,
 ) -> ParetoFrontier:
     """GEPA budget loop over a Pareto frontier (docs/03-evaluator.md §5 skeleton).
 
@@ -421,6 +475,28 @@ def gepa_evolve(
         # survived the Pareto filter AND improved on the parent's BBε lower bound
         # (the same separation signal the gate scores) — no gate call needed.
         frontier.record_child_outcome(parent, improved=bool(kept and bbe > parent.bbe))
+
+    # p2-gepa-plus: System-Aware Merge — crossover the two most-separating members
+    # with DISTINCT added criteria into a union child (broader coverage).
+    if crossover:
+        singles = sorted(
+            (m for m in frontier.members if m.added_criteria), key=lambda m: m.bbe, reverse=True
+        )
+        if len(singles) >= 2 and set(singles[0].added_criteria) != set(singles[1].added_criteria):
+            a, b = singles[0], singles[1]
+            child_version = f"challenger-e{epoch}-xover-{_short_hash(a.version + '+' + b.version)}"
+            try:
+                child_text, added = system_aware_merge(a, b, incumbent_text, child_version, epoch)
+                obj, bbe, defs = frontier_mod.compute_objectives(
+                    child_text, dev_anchors, domain_id=domain_id, epoch=epoch,
+                    client=client, added_criteria=added, adversarial_samples=adversarial_samples,
+                )
+                frontier.add(FrontierMember(
+                    version=child_version, rubric_text=child_text, objectives=obj, bbe=bbe,
+                    added_criteria=added, parent_version=f"{a.version}+{b.version}", sel_deficits=defs,
+                ))
+            except Exception:
+                pass
     return frontier
 
 
@@ -434,6 +510,7 @@ def propose_via_frontier(
     *,
     seed: int = 1234,
     strategy: str = "thompson",
+    crossover: bool = False,
 ) -> tuple[ChallengerProposal, ParetoFrontier]:
     """Run ``gepa_evolve`` and register the frontier's best member as the
     challenger handed to the code gate. Persists the whole frontier for repro.
@@ -450,7 +527,8 @@ def propose_via_frontier(
 
     frontier = gepa_evolve(
         champion_text, epoch=epoch, domain_id=domain_id, budget=budget,
-        client=client, adversarial_samples=adversarial_samples, seed=seed, strategy=strategy,
+        client=client, adversarial_samples=adversarial_samples, seed=seed,
+        strategy=strategy, crossover=crossover,
     )
     best = frontier.best()
     # If the frontier never beat the incumbent, fall back to a single mutation so
