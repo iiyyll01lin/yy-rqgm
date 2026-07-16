@@ -202,7 +202,7 @@ docker compose -f infra/docker-compose.rocm.yml up --build
 額外（非契約，用於驅動 LangGraph）：`GET /health`（含 `inference.using_mock` 與 `evaluator` 摘要：val/test separation / `proxy_gold_separation_gap` / `over_acceptance_rate` / hack-ratio / judge κ）、`GET /`、`GET /api/graph`、
 `POST /api/session/{id}/orchestrate` + `/orchestrate/resume`。
 
-> **前端可視化註記**：admin console（Live/Mock 皆可）會渲染新的 gate 形狀——P2 後驗機率 vs 門檻、效果量 vs MDE、per-flaw 勝負 breakdown、四路 data splits、over-acceptance / over-optimization 監測、provenance。`provenance` 由 `build_report` 產生，但目前 `EpochReportResponse` 未宣告該欄位，故在 **Live 模式會被 pydantic 過濾**（Mock 模式一定看得到）。
+> **前端可視化註記**：admin console（Live/Mock 皆可）會渲染新的 gate 形狀——P2 後驗機率 vs 門檻、效果量 vs MDE、per-flaw 勝負 breakdown、四路 data splits、over-acceptance / over-optimization 監測、provenance。`provenance` 由 `build_report` 產生並已宣告於 `EpochReportResponse`（`judge_model` / `using_mock` / `rqgm_backend` / `git_sha`），故 **Live 與 Mock 模式都會完整回傳**（不再被 pydantic 過濾）。
 
 **慣例**：記憶體為 decimal GB（1 GB = 1e9 B）；activations = 10% × (weights + KV)；overhead = 固定 1 GB；
 KV cache 固定 fp16；tokens/s 套用 0.7 memory-efficiency 係數（服務層）。前端 MOCK 的 `lib/vram.ts`
@@ -235,7 +235,7 @@ yy-rqgm/
 ├── infra/                     # docker-compose.yml + docker-compose.rocm.yml
 ├── scripts/                   # dev.sh（起服務）、demo.sh（走查）、quantize_quark.py
 ├── data/                      # anchor/（48 labeled: train/dev/val/test）、frontier/、epoch_state.json、rqgm_state.json
-└── tests/                     # 74 tests（gatekeeper 物理數學 + RQGM gate/frontier/erasure 必測）
+└── tests/                     # 104 tests（102 passed + 2 @live skipped；gatekeeper 物理數學 + RQGM gate/frontier/erasure 必測）
 ```
 
 ---
@@ -243,7 +243,7 @@ yy-rqgm/
 ## 測試與建置 (Testing & Build)
 
 ```bash
-uv run pytest                  # backend：74 passed（deterministic，離線）
+uv run pytest                  # backend：102 passed, 2 skipped（deterministic，離線；2 skips = @live，需 GPU）
 cd frontend && npm run build   # frontend：type-check + production build
 ```
 

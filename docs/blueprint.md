@@ -120,7 +120,7 @@ flowchart TD
 
 | 術語 | 定義（in AgentForge context） |
 |------|------|
-| **RQGM** | *Recursive Quality-Gated Meta-search*（arXiv 2606.26294）的機制概念：把 search 切成 **epoch**，evaluator 在 epoch 內**凍結**；epoch 邊界時 challenger evaluator 唯有在 **held-out human ground-truth anchor** 上統計勝過 incumbent 才接手，接手後做 **selective erasure**。本平台只借用機制、**不使用其名作為產品名**。 |
+| **RQGM** | *The Red Queen Gödel Machine*（arXiv 2606.26294）的機制概念：把 search 切成 **epoch**，evaluator 在 epoch 內**凍結**；epoch 邊界時 challenger evaluator 唯有在 **held-out human ground-truth anchor** 上統計勝過 incumbent 才接手，接手後做 **selective erasure**。本平台只借用機制、**不使用其名作為產品名**。 |
 | **RSI** | *Recursive Self-Improvement*：系統遞迴地改進「改進自己的能力」。本平台把 RSI 限縮在 evaluator 的 rubric 上，且用 epoch freeze + HITL 把它*馴化*成可稽核。 |
 | **GEPA** | *Genetic-Pareto*（arXiv 2507.19457）：reflective prompt evolution，讀完整 execution trace 當「textual gradient」（Actionable Side Information），用 Pareto frontier 保多樣性；比 RL(GRPO) 少約 **35×** rollouts。本平台的 evaluator-evolution 引擎。 |
 | **DGM** | *Darwin Gödel Machine*（arXiv 2505.22954）：archive + open-ended evolution + 實證驗證。其 *80-iteration SWE-bench ≈ $22,000 / ~2 週* 的成本，是本平台把完整迴圈放 cold path 並主打 AMD memory TCO 的實證依據。 |
@@ -208,7 +208,7 @@ KV_paged     = shared_prefix_KV + P × branch_KV        # P = population/branch 
 
 ## 9. 參考文獻（References）
 
-- **RQGM** — *Recursive Quality-Gated Meta-search*, arXiv:2606.26294 (Cambridge / NVIDIA / MBZUAI / Inria / Flower Labs, Jun 2026). 機制：controlled utility evolution、epoch-frozen evaluator、held-out anchor gating、selective erasure、archive = multi-agent workspace。**（有專利討論；本平台僅採用已發表機制概念，產品名另取。）**
+- **RQGM** — *The Red Queen Gödel Machine*, arXiv:2606.26294 (Cambridge / NVIDIA / MBZUAI / Inria / Flower Labs, Jun 2026). 機制：controlled utility evolution、epoch-frozen evaluator、held-out anchor gating、selective erasure、archive = multi-agent workspace。**（有專利討論；本平台僅採用已發表機制概念，產品名另取。）**
 - **DGM** — *Darwin Gödel Machine*, arXiv:2505.22954 (Sakana AI / UBC). archive + open-ended evolution；80-iteration SWE-bench ≈ $22,000 / ~2 週，本平台 cold-path 與 TCO 論述之成本錨。
 - **GEPA** — *Reflective Prompt Evolution Can Outperform Reinforcement Learning*, arXiv:2507.19457. Genetic-Pareto、reflective mutation、Pareto frontier、~35× fewer rollouts than GRPO。
 - **AMD Instinct** — MI300X 192 GB HBM3 / 5.3 TB/s；MI325X 256 GB HBM3E / 6.0 TB/s（[amd.com/instinct](https://www.amd.com/en/products/accelerators/instinct/mi300.html)）。
