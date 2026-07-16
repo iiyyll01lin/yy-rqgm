@@ -192,6 +192,70 @@ def _latest_frontier() -> dict[str, Any]:
         return {}
 
 
+_AGENT_FRONTIER_DIR = _REPO_ROOT / "data" / "agent_frontier"
+
+
+def _latest_agent_frontier() -> dict[str, Any]:
+    if not _AGENT_FRONTIER_DIR.exists():
+        return {}
+    files = sorted(_AGENT_FRONTIER_DIR.glob("epoch-*.json"))
+    if not files:
+        return {}
+    try:
+        return json.loads(files[-1].read_text(encoding="utf-8")).get("summary", {})
+    except Exception:
+        return {}
+
+
+def _agent_block(epoch: int, client: LemonadeClient | None) -> dict[str, Any]:
+    """The AGENT half's champion program + utility on held-out needs.
+
+    Utility is ``mean(1 − deficit_loose)`` under the FROZEN champion evaluator (the
+    RQGM asymmetry) — never the needs' own ground truth. Reporting is on ``test``;
+    ``val`` is the agent gate's split.
+    """
+    from backend.agent import agent_versioning
+    from backend.agent import needs as needs_ds
+    from backend.agent.agent_score import score_program
+
+    rubric_text = versioning.get_champion_rubric_text()
+    program = agent_versioning.get_champion_program()
+    val = needs_ds.load_needs(needs_ds.VAL)
+    test = needs_ds.load_needs(needs_ds.TEST)
+    val_u = score_program(program, val, rubric_text=rubric_text, evaluator_epoch=epoch, client=client).utility
+    test_u = score_program(program, test, rubric_text=rubric_text, evaluator_epoch=epoch, client=client).utility
+    return {
+        "agent_epoch": agent_versioning.get_agent_epoch(),
+        "champion_version": agent_versioning.get_champion_version(),
+        "champion_skills": list(program.skills),
+        "val_utility": round(val_u, 4),
+        "test_utility": round(test_u, 4),
+        "scored_by": "frozen_champion_evaluator",
+        "needs_splits": needs_ds.split_counts(),
+        "frontier": _latest_agent_frontier(),
+    }
+
+
+def _coevolution_block(agent_block: dict[str, Any], client: LemonadeClient | None) -> dict[str, Any]:
+    """Two-halves co-evolution state + the agent-mined adversarial coupling."""
+    from backend.agent import coevolve
+    from backend.agent import needs as needs_ds
+
+    gamed = coevolve.mine_agent_adversarial(splits=(needs_ds.DEV,), client=client)
+    return {
+        "agent_epoch": agent_block.get("agent_epoch"),
+        "evaluator_epoch": versioning.get_epoch(),
+        "agent_champion": agent_block.get("champion_version"),
+        "evaluator_champion": versioning.get_champion_version(),
+        "agent_mined_adversarial": len(gamed),
+        "adversarial_targets": sorted({s["targets"] for s in gamed}),
+        "asymmetry": (
+            "agent scored by the epoch-frozen champion evaluator; evaluator gated by "
+            "held-out anchors (+ agent-mined gamed samples); utilities erased at the boundary"
+        ),
+    }
+
+
 def build_report(client: LemonadeClient | None = None, *, include_agreement: bool = True) -> dict[str, Any]:
     """Full RQGM transparency report for the current champion."""
     epoch = versioning.get_epoch()
@@ -235,6 +299,15 @@ def build_report(client: LemonadeClient | None = None, *, include_agreement: boo
     except Exception as exc:  # pragma: no cover
         memory = {"error": str(exc)}
 
+    # AGENT half + co-evolution coupling (best-effort; empty if unavailable).
+    agent_block: dict[str, Any] = {}
+    co_evolution: dict[str, Any] = {}
+    try:
+        agent_block = _agent_block(epoch, client)
+        co_evolution = _coevolution_block(agent_block, client)
+    except Exception as exc:  # pragma: no cover
+        agent_block = {"error": str(exc)}
+
     return {
         "epoch_id": epoch,
         "champion_version": champion_version,
@@ -249,6 +322,8 @@ def build_report(client: LemonadeClient | None = None, *, include_agreement: boo
         "judge_vs_gold": _judge_vs_gold(),
         "frontier": _latest_frontier(),
         "memory": memory,
+        "agent": agent_block,
+        "co_evolution": co_evolution,
     }
 
 

@@ -233,6 +233,29 @@ class EpochApproveResponse(BaseModel):
     challenger_exploitation: dict = Field(default_factory=dict)
     erased_memories: int = 0
     reconfirmed_memories: int = 0
+    # Co-evolution coupling: on an evaluator promotion the AGENT archive is
+    # re-scored under the new champion (agent-utility selective erasure).
+    agent_utility_erasure: dict = Field(default_factory=dict)
+    reason: str = ""
+
+
+# ---------------------------------------------------------------------------
+# admin / agent (RQGM agent-half co-evolution: propose / promote a program)
+# ---------------------------------------------------------------------------
+class AgentProposeResponse(BaseModel):
+    # None when the frontier never beat the incumbent champion program.
+    challenger_id: str | None = None
+    metrics: dict = Field(default_factory=dict)
+    frontier: dict = Field(default_factory=dict)
+
+
+class AgentPromoteResponse(BaseModel):
+    agent_epoch_id: int
+    applied: bool
+    champion_version: str = ""
+    # Agent gate = challenger vs champion PROGRAM on held-out val needs, scored by
+    # the epoch-FROZEN champion EVALUATOR (the RQGM asymmetry).
+    gate: dict = Field(default_factory=dict)
     reason: str = ""
 
 
@@ -259,6 +282,11 @@ class EpochReportResponse(BaseModel):
     judge_vs_gold: dict = Field(default_factory=dict)
     frontier: dict = Field(default_factory=dict)
     memory: dict = Field(default_factory=dict)
+    # agent = the AGENT half's champion program + utility on held-out needs (scored
+    # by the frozen champion evaluator); co_evolution = the two-halves epoch state +
+    # agent-mined adversarial coupling. Both empty if the agent half is unavailable.
+    agent: dict = Field(default_factory=dict)
+    co_evolution: dict = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

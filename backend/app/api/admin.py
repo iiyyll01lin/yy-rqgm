@@ -5,6 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from backend.app.models import (
+    AgentPromoteResponse,
+    AgentProposeResponse,
     EpochApproveRequest,
     EpochApproveResponse,
     EpochProposeResponse,
@@ -17,6 +19,8 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 # The latest proposed challenger awaiting an approve/reject decision (PoC state).
 _pending_challenger: str | None = None
+# The latest proposed AGENT-program challenger awaiting a promote decision.
+_pending_agent_challenger: str | None = None
 
 
 @router.post("/epoch/propose", response_model=EpochProposeResponse)
@@ -72,6 +76,55 @@ def approve_epoch(body: EpochApproveRequest) -> EpochApproveResponse:
         challenger_exploitation=result.get("challenger_exploitation", {}),
         erased_memories=result.get("erased_memories", 0),
         reconfirmed_memories=result.get("reconfirmed_memories", 0),
+        agent_utility_erasure=result.get("agent_utility_erasure", {}),
+        reason=result.get("reason", ""),
+    )
+
+
+# ---------------------------------------------------------------------------
+# AGENT half (RQGM co-evolution): propose / promote a task-agent PROGRAM
+# ---------------------------------------------------------------------------
+@router.post("/agent/propose", response_model=AgentProposeResponse)
+def propose_agent() -> AgentProposeResponse:
+    """Evolve a Pareto frontier of agent PROGRAMS against the FROZEN champion
+    evaluator and return the frontier's best challenger for the agent gate.
+
+    The agent is scored by the epoch-frozen champion evaluator
+    (``judge.score_candidate`` on the champion rubric), never by the held-out
+    needs' own ground truth — the RQGM anti-reward-hacking asymmetry.
+    """
+    global _pending_agent_challenger
+    from backend.agent import agent_evolve
+
+    proposal, frontier = agent_evolve.propose_agent_via_frontier()
+    _pending_agent_challenger = proposal.get("challenger_id")
+    return AgentProposeResponse(
+        challenger_id=proposal.get("challenger_id"),
+        metrics=proposal.get("metrics", {}),
+        frontier=frontier.to_dict(),
+    )
+
+
+@router.post("/agent/promote", response_model=AgentPromoteResponse)
+def promote_agent() -> AgentPromoteResponse:
+    """Agent gate: promote the pending challenger PROGRAM iff it beats the champion
+    on held-out val needs as scored by the frozen champion evaluator (agent epoch++)."""
+    global _pending_agent_challenger
+    from backend.agent import agent_evolve
+
+    if _pending_agent_challenger is None:
+        raise HTTPException(
+            status_code=400,
+            detail="no agent challenger proposed; POST /api/admin/agent/propose first",
+        )
+    result = agent_evolve.approve_agent_challenger(_pending_agent_challenger)
+    if result.get("applied"):
+        _pending_agent_challenger = None  # consumed
+    return AgentPromoteResponse(
+        agent_epoch_id=result["agent_epoch_id"],
+        applied=result["applied"],
+        champion_version=result.get("champion_version", ""),
+        gate=result.get("gate", {}),
         reason=result.get("reason", ""),
     )
 
