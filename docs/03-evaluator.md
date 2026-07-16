@@ -236,7 +236,7 @@ flowchart TD
 
 1. **讀 trace 當 textual gradient**：GEPA 讀 evaluator 的 `<thinking>` 與 candidate 的完整軌跡，診斷「為什麼這條 poison pill 被漏判」，產生**可執行的文字修正**（例如「新增一條 red flag：當閥開度指令與流量回饋背離時視為 pc_ducttape」）。這比「答錯了，reward −1」資訊量高幾個數量級。
 2. **樣本效率 ~35× 於 RL(GRPO)**：evaluator 的每次「rollout」都很貴（要跑完整 candidate + surrogate 驗證），GEPA 用 100–500 次評估達到 RL 需要上萬次的效果——這與本平台把進化放 cold path、盡量省 rollout 的成本邏輯（[`02-sizing-math.md`](./02-sizing-math.md) §5.4）完全一致。
-3. **Pareto frontier 防 collapse**（**已實作**，[`backend/evaluator/frontier.py`](../backend/evaluator/frontier.py)）：不是只留「總分最高」的單一 rubric，而是保留 **top-K 非 dominated** 的族群。多目標為：**per-criterion 分離度 `sep::<criterion>`**（每個 criterion / poison pill 各自留最佳）＋ **`parsimony`**（`−(GEPA 新增 criterion 數)`，逼出「廣覆蓋 vs 精簡」的真取捨）＋ **`adversarial`**（self-play 紅隊樣本上仍嚴格者得分更高，見本節下方 Adversarial Self-Play）。這避免 local optimum 與 diversity collapse（rubric 全退化成只會抓一種錯）。frontier 在 **`dev` 選擇split**（selection split）上以 BBε 下界排名——刻意選在 code gate 從不看的 split 上，消除 winner's curse：gate 之後在 `val` 上的再測才是**真的** held-out，而不是重測 selection 已偷看過的 split。父代選擇改用 **Thompson 取樣**（每個 frontier member 帶一個 `Beta(prior+成功, prior+失敗)` 後驗，取代舊的近乎均勻 `bbe+1` 權重）。整條 frontier 每個 epoch 落地到 `data/frontier/epoch-*.json` 供重現。
+3. **Pareto frontier 防 collapse**（**已實作**，[`backend/evaluator/frontier.py`](../backend/evaluator/frontier.py)）：不是只留「總分最高」的單一 rubric，而是保留 **top-K 非 dominated** 的族群。多目標為：**per-criterion 分離度 `sep::<criterion>`**（每個 criterion / poison pill 各自留最佳）＋ **`parsimony`**（`−(GEPA 新增 criterion 數)`，逼出「廣覆蓋 vs 精簡」的真取捨）＋ **`adversarial`**（self-play 紅隊樣本上仍嚴格者得分更高，見本節下方 Adversarial Self-Play）。這避免 local optimum 與 diversity collapse（rubric 全退化成只會抓一種錯）。frontier 在 **`dev` 選擇split**（selection split）上以 BBε 下界排名——刻意選在 code gate 從不看的 split 上，消除 winner's curse：gate 之後在 `val` 上的再測才是**真的** held-out，而不是重測 selection 已偷看過的 split。父代選擇改用 **Thompson 取樣**（每個 frontier member 帶一個 `Beta(prior+成功, prior+失敗)` 後驗，取代舊的近乎均勻 `bbe+1` 權重）；**選配** `gepa_evolve(strategy="mcts")` 改走**淺層 MCTS（UCT）** 父代選擇（`exploit + c·√(ln N / n)`、未訪節點優先展開，deterministic），對淺樹增益有限。整條 frontier 每個 epoch 落地到 `data/frontier/epoch-*.json` 供重現。
 
 ```python
 # GEPA reflective mutation loop (cold path) — 已實作於 backend/evaluator/{evolve,frontier}.py
@@ -480,6 +480,6 @@ flowchart LR
 - 升級後 **selective erasure = soft-delete + reconfirm**：`heuristic_failure` 由新 champion 重驗、軟刪不再確認者、延後硬 purge；`physics_truth` 永久保留（由 gatekeeper 灌入）。
 - Evaluator **恆在進化 harness 之外** + epoch freeze + **外部 labeled anchor 的 code gate**，從結構上封死 reward hacking。
 - **Self-healing Qdrant memory**：`memory_type` × `created_at_epoch` 治理 + hybrid search（**已接上 judge**，embedding 為 offline hashing BoW 近似）+ soft-delete/purge。
-- **offline 誠實邊界**：judge 為 deterministic rubric-aware **mock**（`mock_scoring.py`），真 live 評分需本地模型（Lemonade/vLLM）；frontier 父代選擇的 **Thompson 取樣已實作**，但 **MCTS 與 multi-agent debate 仍為 optional/未實作**。
+- **offline 誠實邊界**：judge 為 deterministic rubric-aware **mock**（`mock_scoring.py`），真 live 評分需本地模型（Lemonade/vLLM）；frontier 父代選擇預設 **Thompson 取樣**，**淺層 MCTS（UCT）** 與 **high-disagreement multi-agent debate** 為 **opt-in 已實作**（`gepa_evolve(strategy="mcts")`、`evaluate_panel(debate=True)`）——**晉升 gate 恆保持 deterministic + debate-free**；debate 於 offline mock 為可重現 no-op（真辯論需 live 模型）。對淺樹 MCTS 的控制增益有限（如本節所述）。
 
 *下一步：[`04-stack-export.md`](./04-stack-export.md) — 這一切跑在哪些開源元件上、怎麼部署、怎麼算給 C-Level 聽。*

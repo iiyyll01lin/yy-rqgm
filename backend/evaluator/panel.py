@@ -98,6 +98,8 @@ class PanelEvaluation:
     consensus_red_flags: list[str]
     per_persona: list[dict[str, Any]] = field(default_factory=list)
     n_judges: int = 0
+    debate_triggered: bool = False   # P2: a debate round fired (high disagreement)
+    debate_rounds: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,8 +109,33 @@ class PanelEvaluation:
             "verdict": self.verdict,
             "consensus_red_flags": self.consensus_red_flags,
             "n_judges": self.n_judges,
+            "debate_triggered": self.debate_triggered,
+            "debate_rounds": self.debate_rounds,
             "per_persona": self.per_persona,
         }
+
+
+DEFAULT_DEBATE_THRESHOLD = 0.15  # panel deficit_std >= this => trigger a debate round
+
+
+def _debate_block(per_persona: list[dict[str, Any]], deficits: list[float]) -> str:
+    """Rebuttal context injected into round 2: the spread + each peer's verdict.
+
+    Offline the deterministic mock IGNORES this block (flaws are read only from the
+    candidate/user turn), so the debate round is a reproducible no-op; on a live
+    model it lets each judge revise after seeing where the panel disagrees.
+    """
+    med = round(median(deficits), 4) if deficits else 0.0
+    lines = [
+        f"- {p['persona']} scored deficit {p['deficit']} "
+        f"(flags: {', '.join(p['red_flags']) or 'none'})"
+        for p in per_persona
+    ]
+    return (
+        "PANEL_DEBATE (high disagreement): the panel median is "
+        f"{med} but judges disagree. Reconsider your score against the physical evidence "
+        "and your peers below; concede or defend with a concrete mechanism:\n" + "\n".join(lines)
+    )
 
 
 def _reorder_criteria(rubric_text: str, ordered_blocks: list[str], original_blocks: list[str]) -> str:
@@ -168,6 +195,8 @@ def evaluate_panel(
     position_swap: bool = False,
     judge_model: str | None = None,
     cross_model: str | None = None,
+    debate: bool = False,
+    debate_threshold: float = DEFAULT_DEBATE_THRESHOLD,
     structured: bool | None = None,
 ) -> PanelEvaluation:
     """Run the judge panel on one candidate and aggregate by self-consistency.
@@ -187,43 +216,63 @@ def evaluate_panel(
     use_structured = structured if structured is not None else (not client.using_mock)
     response_format = judge_response_format() if use_structured else None
 
-    per_persona: list[dict[str, Any]] = []
-    deficits: list[float] = []
-    flag_votes: dict[str, int] = {}
-    for i, spec in enumerate(personas):
-        name, temp, pmodel = _persona_spec(spec, judge_model)
-        base_rt = _shuffle_criteria(rubric_text, seed=i) if randomize_order else rubric_text
-        # AB/BA position swap: score under the given order AND the reversed order.
-        orientations = [base_rt] + ([_reverse_criteria(base_rt)] if position_swap else [])
-        persona_seed = None if seed is None else seed + i
+    def _panel_pass(debate_block: str | None, seed_offset: int):
+        pp: list[dict[str, Any]] = []
+        defs: list[float] = []
+        votes: dict[str, int] = {}
+        for i, spec in enumerate(personas):
+            name, temp, pmodel = _persona_spec(spec, judge_model)
+            base_rt = _shuffle_criteria(rubric_text, seed=i) if randomize_order else rubric_text
+            # AB/BA position swap: score under the given order AND the reversed order.
+            orientations = [base_rt] + ([_reverse_criteria(base_rt)] if position_swap else [])
+            persona_seed = None if seed is None else seed + i + seed_offset
+            block = memory_block
+            if debate_block:
+                block = f"{memory_block}\n{debate_block}" if memory_block else debate_block
 
-        run_deficits: list[float] = []
-        flags_seen: set[str] = set()
-        for j, rt in enumerate(orientations):
-            msgs = build_rubric_prompt(
-                architecture, domain_id, epoch, rt,
-                scoring_mode=SCORING_LOOSE, memory_block=memory_block, persona=f"{name}@T={temp}",
-            )
-            # Distinct (still deterministic) seed per orientation so AB and BA are
-            # not identical samples on the live path.
-            run_seed = None if persona_seed is None else persona_seed + 10_000 * j
-            parsed = extract_json(
-                client.chat(
-                    msgs, model=pmodel, temperature=temp, max_tokens=900,
-                    seed=run_seed, response_format=response_format,
+            run_deficits: list[float] = []
+            flags_seen: set[str] = set()
+            for j, rt in enumerate(orientations):
+                msgs = build_rubric_prompt(
+                    architecture, domain_id, epoch, rt,
+                    scoring_mode=SCORING_LOOSE, memory_block=block, persona=f"{name}@T={temp}",
                 )
-            ) or {}
-            run_deficits.append(_clamp(float(parsed.get("deficit_loose", parsed.get("deficit_score", 0.5)))))
-            for rf in _coerce_red_flags(parsed.get("red_flags")):
-                flags_seen.add(rf.criterion)
+                # Distinct (still deterministic) seed per orientation so AB and BA are
+                # not identical samples on the live path.
+                run_seed = None if persona_seed is None else persona_seed + 10_000 * j
+                parsed = extract_json(
+                    client.chat(
+                        msgs, model=pmodel, temperature=temp, max_tokens=900,
+                        seed=run_seed, response_format=response_format,
+                    )
+                ) or {}
+                run_deficits.append(_clamp(float(parsed.get("deficit_loose", parsed.get("deficit_score", 0.5)))))
+                for rf in _coerce_red_flags(parsed.get("red_flags")):
+                    flags_seen.add(rf.criterion)
 
-        d = sum(run_deficits) / len(run_deficits)
-        deficits.append(d)
-        for cid in flags_seen:
-            flag_votes[cid] = flag_votes.get(cid, 0) + 1
-        per_persona.append({"persona": name, "temperature": temp, "deficit": round(d, 4),
-                            "model": pmodel, "red_flags": sorted(flags_seen),
-                            "orientations": len(orientations)})
+            d = sum(run_deficits) / len(run_deficits)
+            defs.append(d)
+            for cid in flags_seen:
+                votes[cid] = votes.get(cid, 0) + 1
+            pp.append({"persona": name, "temperature": temp, "deficit": round(d, 4),
+                       "model": pmodel, "red_flags": sorted(flags_seen),
+                       "orientations": len(orientations)})
+        return pp, defs, votes
+
+    # Round 1 — independent scoring.
+    per_persona, deficits, flag_votes = _panel_pass(None, 0)
+
+    # P2 debate: only on HIGH disagreement, and NEVER on the promotion gate (which
+    # uses score_candidate, not the panel). Offline the mock ignores the injected
+    # rebuttal, so this is a reproducible no-op; live, judges may revise.
+    debate_triggered = False
+    debate_rounds = 0
+    if debate and len(deficits) > 1 and pstdev(deficits) >= debate_threshold:
+        per_persona, deficits, flag_votes = _panel_pass(
+            _debate_block(per_persona, deficits), seed_offset=100_000
+        )
+        debate_triggered = True
+        debate_rounds = 1
 
     med = median(deficits) if deficits else 0.5
     mean = sum(deficits) / len(deficits) if deficits else 0.5
@@ -234,6 +283,7 @@ def evaluate_panel(
     return PanelEvaluation(
         deficit_median=med, deficit_mean=mean, deficit_std=std, verdict=verdict,
         consensus_red_flags=consensus, per_persona=per_persona, n_judges=len(personas),
+        debate_triggered=debate_triggered, debate_rounds=debate_rounds,
     )
 
 

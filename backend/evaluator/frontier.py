@@ -25,6 +25,7 @@ to ``data/frontier`` for reproducibility.
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -146,6 +147,34 @@ class ParetoFrontier:
                 best_draw = draw
                 best_member = m
         return best_member
+
+    def sample_uct(self, *, c: float = 1.4) -> FrontierMember:
+        """Shallow-MCTS (UCT) parent selection — the P2 alternative to Thompson.
+
+        Treats the non-dominated set as a shallow search tree: each member is a node
+        whose reward is its gate-improving child rate. UCT balances exploiting the
+        best success-rate parent against exploring under-tried ones
+        (``exploit + c·sqrt(ln(N)/n)``), expanding any unvisited node first. Fully
+        DETERMINISTIC (no RNG), so the frontier stays reproducible; like Thompson it
+        only ever samples from the current Pareto set. NOTE: for the shallow tree
+        here the control-policy gain over Thompson is limited (see docs §5).
+        """
+        if not self.members:
+            raise IndexError("empty frontier")
+        if len(self.members) == 1:
+            return self.members[0]
+        total = sum(m.child_trials for m in self.members)
+        for m in self.members:
+            if m.child_trials == 0:
+                return m  # expand an unvisited node first (standard UCT)
+        best, best_score = self.members[0], float("-inf")
+        for m in self.members:
+            exploit = m.child_successes / m.child_trials
+            explore = c * math.sqrt(math.log(max(total, 1)) / m.child_trials)
+            score = exploit + explore
+            if score > best_score:
+                best_score, best = score, m
+        return best
 
     def record_child_outcome(self, parent: FrontierMember, *, improved: bool) -> None:
         """Update ``parent``'s Beta posterior after evaluating one of its children.

@@ -364,6 +364,7 @@ def gepa_evolve(
     client: LemonadeClient | None = None,
     adversarial_samples: list[dict[str, Any]] | None = None,
     seed: int = 1234,
+    strategy: str = "thompson",
 ) -> ParetoFrontier:
     """GEPA budget loop over a Pareto frontier (docs/03-evaluator.md §5 skeleton).
 
@@ -395,7 +396,8 @@ def gepa_evolve(
     )
 
     for i in range(budget):
-        parent = frontier.sample_stochastic(rng)
+        # Parent selection policy: Thompson (default) or a shallow-MCTS UCT (P2).
+        parent = frontier.sample_uct() if strategy == "mcts" else frontier.sample_stochastic(rng)
         side_info, _trace = _select_failure_trace(parent.rubric_text, train_weak, epoch, client)
         _refl, _changes, new_criteria = reflect_and_mutate(parent.rubric_text, side_info, epoch, client)
         child_version = f"challenger-e{epoch}-{_short_hash(parent.version + side_info + str(i))}"
@@ -431,12 +433,16 @@ def propose_via_frontier(
     adversarial_samples: list[dict[str, Any]] | None = None,
     *,
     seed: int = 1234,
+    strategy: str = "thompson",
 ) -> tuple[ChallengerProposal, ParetoFrontier]:
     """Run ``gepa_evolve`` and register the frontier's best member as the
     challenger handed to the code gate. Persists the whole frontier for repro.
 
     ``seed`` controls the frontier's stochastic parent selection (threaded to
-    ``gepa_evolve``) and the single-mutation fallback's reproducible id."""
+    ``gepa_evolve``) and the single-mutation fallback's reproducible id.
+    ``strategy`` selects the parent-selection policy (``thompson`` default, or the
+    shallow-MCTS ``mcts``); the gate is unaffected — it always re-tests
+    ``frontier.best()`` on the held-out ``val`` split."""
     client = client or get_lemonade_client()
     epoch = versioning.get_epoch()
     champion_text = versioning.get_champion_rubric_text()
@@ -444,7 +450,7 @@ def propose_via_frontier(
 
     frontier = gepa_evolve(
         champion_text, epoch=epoch, domain_id=domain_id, budget=budget,
-        client=client, adversarial_samples=adversarial_samples, seed=seed,
+        client=client, adversarial_samples=adversarial_samples, seed=seed, strategy=strategy,
     )
     best = frontier.best()
     # If the frontier never beat the incumbent, fall back to a single mutation so
