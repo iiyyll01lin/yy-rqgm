@@ -1,0 +1,13 @@
+# Conventional location for recorded live-model transcripts (request -> completion).
+# A nightly/opt-in live pass records here; CI can then REPLAY them fully offline:
+#
+#   # record once against a real server:
+#   RQGM_RUN_LIVE=1 LEMONADE_BASE_URL=http://localhost:8000/v1 \
+#     LEMONADE_CASSETTE_DIR=tests/cassettes LEMONADE_CASSETTE_MODE=record \
+#     uv run pytest -m live
+#
+#   # replay offline (no GPU / no network):
+#   LEMONADE_CASSETTE_DIR=tests/cassettes LEMONADE_CASSETTE_MODE=replay uv run pytest
+#
+# See backend/inference/cassette.py. Recorded *.json files may be committed to
+# make a live pass reproducible; this .gitkeep just seeds the directory.

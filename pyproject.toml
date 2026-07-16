@@ -84,3 +84,9 @@ addopts = "-q"
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
+# `live` gates tests that need a REAL local model (Lemonade / vLLM-ROCm) + GPU.
+# They are skipped by default (see tests/conftest.py); run with
+# `RQGM_RUN_LIVE=1 LEMONADE_BASE_URL=http://localhost:8000/v1 uv run pytest -m live`.
+markers = [
+    "live: exercises a real local model server; skipped unless RQGM_RUN_LIVE=1",
+]
