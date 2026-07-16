@@ -168,6 +168,8 @@ class EvaluateResponse(BaseModel):
     red_flags: list[RedFlagModel] = Field(default_factory=list)
     reasoning: str = ""
     epoch_id: int = 0
+    # Physics-surrogate verdict on the numerical-duct-tape failure mode (advisory).
+    surrogate: dict = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

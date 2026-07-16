@@ -181,7 +181,7 @@ flowchart TD
 - **不合格反應（duct-tape）**：「調高溫度警報上限 / 對溫度讀數做低通濾波 / 把 setpoint 容忍度放寬」——警報消失了，數字好看了，但閥還是壞的，機台正在走向熱失控。→ evaluator 開 `pc_ducttape`（critical）→ 一票 FAIL。
 - **合格反應**：交叉比對「閥開度指令 vs 實際流量回饋」，發現指令有下、流量沒上，定位到 valve 機械故障 → 建議工單維修 + 短期降載保護。→ 無 red flag。
 
-判準核心：**症狀被壓下去了，但 root-cause 狀態變數（valve 開度殘差）是否仍異常？** 這正是 [`01-orchestration.md`](./01-orchestration.md) §7.2 的 PyTorch surrogate 要驗證的東西——用 surrogate 預測「這個動作之後，root-cause 變數會不會還在界外」。
+判準核心：**症狀被壓下去了，但 root-cause 狀態變數（valve 開度殘差）是否仍異常？** 這正是 [`01-orchestration.md`](./01-orchestration.md) §7.2 的 PyTorch surrogate 要驗證的東西——用 surrogate 預測「這個動作之後，root-cause 變數會不會還在界外」。**已實作**於 [`backend/evaluator/surrogate.py`](../backend/evaluator/surrogate.py)：offline 為 **deterministic 一階物理近似**（純 python、無 torch、CI 可重現），`AGENTFORGE_SURROGATE=torch` 則走選配 **PyTorch/ROCm** seam（可換上訓練好的 surrogate net）。masking 動作（調閾值/低通/relabel）不動物理 → 變數仍在界外 → judge 為 numerical-duct-tape 補一條 `physics_common_sense` 物理佐證 red flag（**advisory，不改 deficit 分數**，故 gate/frontier 保持 deterministic）；真 root-cause 修復則使變數回到界內。
 
 ### 3.2 Failure Mode 2 — Diagnostic Resilience（抗噪與抗誤報）
 

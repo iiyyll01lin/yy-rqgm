@@ -136,7 +136,7 @@ flowchart TD
 | **HITL** | *Human-in-the-Loop*：LangGraph `interrupt()` + checkpointer 實作的人工檢查點；本平台用它同時當 anchor 與 epoch 升級的核准閘。 |
 | **KV Cache** | 自回歸 decode 時快取的 keys/values；`KV_per_token = 2 × n_layers × n_kv_heads × head_dim × bytes_kv`。population search 時它會爆炸（見 A2）。 |
 | **PagedAttention / Prefix Caching** | vLLM 的記憶體管理：把共享 prefix 的 KV 只存一份，population 只付 `shared_prefix_KV + P × branch_KV`（見 A2）。 |
-| **Surrogate Model** | 用 PyTorch on ROCm 訓練的**開源**代理模型，逼近工廠物理/製程回應，取代閉源 Omniverse 當 Evaluator Agent 的驗證器（見 A1）。 |
+| **Surrogate Model** | 用 PyTorch on ROCm 訓練的**開源**代理模型，逼近工廠物理/製程回應，取代閉源 Omniverse 當 Evaluator Agent 的驗證器（見 A1）。**已實作**：[`backend/evaluator/surrogate.py`](../backend/evaluator/surrogate.py)——offline deterministic 一階物理近似（驗「動作後 root-cause 變數是否仍在界外」），`AGENTFORGE_SURROGATE=torch` 為選配 ROCm 路徑。 |
 | **Tier** | AMD 硬體分層（T1 Ryzen AI → T4 Instinct），見 §5。 |
 
 ---

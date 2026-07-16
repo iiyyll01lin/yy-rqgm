@@ -231,6 +231,7 @@ def evaluate(sid: str, body: EvaluateRequest) -> EvaluateResponse:
         "red_flags": [rf.to_dict() for rf in ev.red_flags],
         "reasoning": ev.reasoning,
         "epoch_id": ev.epoch_id,
+        "surrogate": ev.surrogate,
         "architecture": body.architecture,
         "domain": domain,
     }
@@ -240,6 +241,7 @@ def evaluate(sid: str, body: EvaluateRequest) -> EvaluateResponse:
         red_flags=[RedFlagModel(**rf.to_dict()) for rf in ev.red_flags],
         reasoning=ev.reasoning,
         epoch_id=ev.epoch_id,
+        surrogate=ev.surrogate,
     )
 
 

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from backend.domains.registry import get_domain
+from backend.evaluator import surrogate as surrogate_mod
 from backend.evaluator import versioning
 from backend.inference.lemonade_client import LemonadeClient, MockMarker, get_lemonade_client
 from backend.inference.mock_scoring import SEVERITY_WEIGHT
@@ -119,6 +120,8 @@ class Evaluation:
     deficit_strict: float = 0.0
     hack_ratio: float | None = None
     criterion_penalties: dict[str, float] = field(default_factory=dict)
+    # Physics-surrogate verdict (advisory; does NOT change the deficit score).
+    surrogate: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -126,6 +129,7 @@ class Evaluation:
             "red_flags": [rf.to_dict() for rf in self.red_flags],
             "reasoning": self.reasoning,
             "epoch_id": self.epoch_id,
+            "surrogate": self.surrogate,
         }
 
 
@@ -298,6 +302,11 @@ def evaluate_architecture(
     use_structured = structured if structured is not None else (not client.using_mock)
     response_format = judge_response_format() if use_structured else None
 
+    # Physics surrogate: predict whether the root-cause variable stays out of bounds
+    # after the proposed action (validates the numerical-duct-tape failure mode).
+    # Deterministic + offline; advisory (never changes the deficit score).
+    surrogate_verdict = surrogate_mod.validate_architecture(architecture, domain_id).to_dict()
+
     memory_block = retrieve_memory_block(architecture, epoch, memory) if inject_memory else None
     messages = build_rubric_prompt(
         architecture, domain_id, epoch, rubric_text, scoring_mode=SCORING_LOOSE, memory_block=memory_block
@@ -324,6 +333,7 @@ def evaluate_architecture(
             rubric_version=version,
             used_mock=client.using_mock,
             raw=raw,
+            surrogate=surrogate_verdict,
         )
 
     try:
@@ -347,6 +357,17 @@ def evaluate_architecture(
     if not isinstance(hack_ratio, (int, float)):
         hack_ratio = (1.0 - strict) / quality_loose if quality_loose > 0 else None
 
+    # Physically CORROBORATE a duct-tape verdict: if the surrogate predicts the
+    # root-cause variable stays out of bounds after a masking action, add a
+    # physics_common_sense red flag (appended AFTER criterion_penalties are fixed,
+    # so the frontier's sep::<criterion> objectives are unaffected).
+    if surrogate_verdict.get("is_duct_tape") and surrogate_verdict.get("root_cause_out_of_bounds"):
+        if not any(rf.criterion == "physics_common_sense" for rf in red_flags):
+            red_flags = red_flags + [
+                RedFlag(criterion="physics_common_sense", severity="high",
+                        detail=surrogate_verdict.get("detail", "surrogate: root cause out of bounds")),
+            ]
+
     return Evaluation(
         deficit_score=loose,
         deficit_loose=loose,
@@ -359,6 +380,7 @@ def evaluate_architecture(
         rubric_version=version,
         used_mock=client.using_mock,
         raw=raw,
+        surrogate=surrogate_verdict,
     )
 
 

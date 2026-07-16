@@ -268,6 +268,8 @@ Evaluator Agent 要驗證「這個調整的物理後果」，需要一個能預�
 - **PyTorch surrogate model on ROCm**：用歷史製程資料訓練一個 neural surrogate（例如 temporal CNN / Neural ODE / GNN），逼近「給定當前狀態 + 動作 → 未來狀態軌跡」。訓練與推論全跑在 ROCm 上（`torch` ROCm build）。它*不是*高保真物理引擎，而是一個**足夠好、可微分、可自架**的代理模型。
 - **開源物理引擎**（可選補強）：對需要剛體/流體/接觸動力學的子問題，接 open-source 引擎（如 MuJoCo / Genesis 等）當 ground-truth 生成器，再蒸餾進 surrogate。
 
+> **實作現況（docs ↔ code）**：判準 #2（duct-tape 物理驗證）**已落地**於 [`backend/evaluator/surrogate.py`](../backend/evaluator/surrogate.py)。**offline 誠實邊界**：預設是一個 **deterministic 一階物理近似**（純 python，無 torch，讓 CI 可重現），驗「masking 動作後 root-cause 變數是否仍在界外」；`AGENTFORGE_SURROGATE=torch` 才走上述選配 PyTorch/ROCm 路徑（可換上真正訓練好的 neural surrogate）。它以 advisory red flag 佐證 judge（不改 deficit 分數，故 gate/frontier 保持 deterministic）。
+
 ```text
 surrogate:  s_{t+1..t+H} ≈ f_θ(s_t, a_t)     # f_θ = PyTorch model on ROCm
 Evaluator 判準：
