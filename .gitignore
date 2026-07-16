@@ -28,6 +28,7 @@ data/epoch_state.json
 data/rubric_history/*.xml
 data/rqgm_state.json
 data/frontier/
+data/gate_sequential.json
 
 # OS / editor
 .DS_Store

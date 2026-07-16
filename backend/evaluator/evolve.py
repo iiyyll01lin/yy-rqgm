@@ -626,6 +626,16 @@ def approve_challenger(
 
     result = versioning.promote_challenger(version)  # {epoch_id, champion_version, prior_epoch}
 
+    # P3: when the cross-epoch anytime-valid correction is active, spend one look of
+    # the family-wise budget now that a promotion is actually APPLIED (so the
+    # e-process wealth accumulates per promotion, not per evaluation).
+    if gate_dict.get("sequential_correction"):
+        gate_mod.commit_sequential_look(
+            gate_dict.get("sequential_e_value", 1.0),
+            epoch=result["epoch_id"],
+            version=version,
+        )
+
     # Selective erasure: soft-delete + reconfirm against the NEW champion.
     mem = memory or get_memory()
     new_champion_text = versioning.get_champion_rubric_text()
