@@ -20,7 +20,9 @@ import { Badge, Callout, Card } from "@/components/ui";
 import type {
   EpochApproveResponse,
   ExploitationReport,
+  FlawWinCounts,
   Frontier,
+  GateResult,
 } from "@/lib/types";
 import {
   CheckRow,
@@ -31,6 +33,137 @@ import {
   objectiveLabel,
   signed,
 } from "./shared";
+
+/* --------------------------------------------------------------------- */
+/* P2 — Bayesian Beta-Binomial posterior (replaces the old bootstrap CI)  */
+/* --------------------------------------------------------------------- */
+
+/** Posterior P(Δsep>0) vs threshold + observed effect vs MDE + W/L/T tally. */
+function PosteriorMeter({ gate }: { gate: GateResult }) {
+  const postPct = Math.round(
+    Math.max(0, Math.min(1, gate.posterior_prob_improvement)) * 100,
+  );
+  const thrPct = Math.round(
+    Math.max(0, Math.min(1, gate.posterior_threshold)) * 100,
+  );
+  const postOk = gate.posterior_prob_improvement >= gate.posterior_threshold;
+  const effOk = gate.effect_size >= gate.min_detectable_effect;
+  return (
+    <div className="mt-3 space-y-3 rounded-xl border border-line bg-surface-2/40 p-3.5">
+      <div>
+        <div className="mb-1 flex items-center justify-between text-[11px]">
+          <span className="text-muted">
+            P(Δsep&gt;0) 後驗機率 · Beta-Binomial posterior
+          </span>
+          <span
+            className={cn(
+              "font-mono tabular-nums",
+              postOk ? "text-emerald-300" : "text-red-300",
+            )}
+          >
+            {fixed(gate.posterior_prob_improvement, 4)} {postOk ? "≥" : "<"}{" "}
+            {gate.posterior_threshold}
+          </span>
+        </div>
+        <div className="relative h-3 w-full overflow-hidden rounded bg-surface-2">
+          <div
+            className={cn(
+              "h-full rounded transition-[width] duration-500",
+              postOk ? "bg-emerald-400/80" : "bg-red-400/80",
+            )}
+            style={{ width: `${postPct}%` }}
+          />
+          <div
+            className="absolute -top-0.5 bottom-[-2px] w-0.5 bg-white/90"
+            style={{ left: `${thrPct}%` }}
+            title={`posterior threshold ${gate.posterior_threshold}`}
+          />
+        </div>
+        <div className="mt-1 text-[10px] text-muted">
+          白線 = 晉升門檻 {gate.posterior_threshold}；長條 = 目前後驗機率。
+        </div>
+      </div>
+      <div className="flex items-center justify-between text-[11px]">
+        <span className="text-muted">效果量 effect (Δsep) vs MDE 最小可偵測效果</span>
+        <span
+          className={cn(
+            "font-mono tabular-nums",
+            effOk ? "text-emerald-300" : "text-red-300",
+          )}
+        >
+          {signed(gate.effect_size)} {effOk ? "≥" : "<"} {gate.min_detectable_effect}
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-[11px] text-muted">
+          weak anchor 配對勝負 (n={gate.n_weak}):
+        </span>
+        <Badge tone="green">{gate.n_wins} W</Badge>
+        <Badge tone="red">{gate.n_losses} L</Badge>
+        <Badge tone="neutral">{gate.n_ties} T</Badge>
+      </div>
+    </div>
+  );
+}
+
+/** Per-flaw-family win/loss/tie breakdown (which planted failure modes moved). */
+function FlawWinBreakdown({
+  perFlaw,
+}: {
+  perFlaw: Record<string, FlawWinCounts>;
+}) {
+  const entries = Object.entries(perFlaw ?? {});
+  if (!entries.length) return null;
+  return (
+    <div className="mt-3">
+      <div className="mb-1.5 text-[11px] text-muted">
+        每個 flaw family 的配對勝負（challenger 是否更嚴格地罰這個植入的失敗模式）
+      </div>
+      <div className="grid gap-1.5 sm:grid-cols-2">
+        {entries
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([flaw, c]) => {
+            const total = c.win + c.loss + c.tie || 1;
+            return (
+              <div
+                key={flaw}
+                className="rounded-md border border-line bg-surface-2/50 px-2 py-1.5"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className="truncate font-mono text-[11px] text-zinc-300"
+                    title={flaw}
+                  >
+                    {flaw}
+                  </span>
+                  <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted">
+                    {c.win}W/{c.loss}L/{c.tie}T
+                  </span>
+                </div>
+                <div className="mt-1 flex h-1.5 overflow-hidden rounded-full bg-surface-2">
+                  <div
+                    className="h-full bg-emerald-400/80"
+                    style={{ width: `${(c.win / total) * 100}%` }}
+                    title={`win ${c.win}`}
+                  />
+                  <div
+                    className="h-full bg-red-400/80"
+                    style={{ width: `${(c.loss / total) * 100}%` }}
+                    title={`loss ${c.loss}`}
+                  />
+                  <div
+                    className="h-full bg-zinc-500/60"
+                    style={{ width: `${(c.tie / total) * 100}%` }}
+                    title={`tie ${c.tie}`}
+                  />
+                </div>
+              </div>
+            );
+          })}
+      </div>
+    </div>
+  );
+}
 
 function StageTitle({
   n,
@@ -79,7 +212,7 @@ export function GatePanel({ result }: { result: EpochApproveResponse }) {
               兩段式晉升門檻 Two-stage gate
             </h3>
             <p className="mt-0.5 text-xs text-muted">
-              Code gate 先行（held-out val 統計把關），HITL 只是通過後的否決安全鎖。
+              Code gate 先行（held-out val：P1 非劣 + P2 Bayesian 後驗/MDE），HITL 只是通過後的否決安全鎖。
             </p>
           </div>
         </div>
@@ -123,10 +256,12 @@ export function GatePanel({ result }: { result: EpochApproveResponse }) {
             />
             <CheckRow
               ok={gate.p2_passed}
-              label="P2 bootstrap CI 下界 > 0"
-              value={`${signed(gate.bootstrap_lower_bound)} @ α=${gate.bootstrap_alpha}`}
+              label="P2 Bayesian 後驗 + MDE"
+              value={`P=${fixed(gate.posterior_prob_improvement, 3)}`}
             />
           </div>
+          <PosteriorMeter gate={gate} />
+          <FlawWinBreakdown perFlaw={gate.per_flaw_wins} />
           <p className="mt-2.5 font-mono text-[11px] leading-relaxed text-muted">
             {gate.reason}
           </p>
@@ -226,7 +361,7 @@ function ObjectiveChip({ k, v }: { k: string; v: number }) {
 export function FrontierPanel({
   frontier,
   title = "Pareto frontier（population 搜尋）",
-  desc = "top-K 非 dominated 的挑戰者 rubric；最佳者（BBε 下界最高）送 code gate。",
+  desc = "top-K 非 dominated 的挑戰者 rubric；在 dev 選擇split 上 BBε 下界最高者送 code gate（父代以 Thompson 取樣）。",
 }: {
   frontier: Frontier;
   title?: string;
@@ -298,9 +433,19 @@ export function FrontierPanel({
                     </Badge>
                   ) : null}
                 </div>
-                <span className="font-mono text-xs tabular-nums text-zinc-300">
-                  BBε {signed(m.bbe)}
-                </span>
+                <div className="flex items-center gap-2">
+                  {typeof m.child_trials === "number" && m.child_trials > 0 ? (
+                    <span
+                      className="font-mono text-[10px] text-muted"
+                      title="Thompson-sampling bandit state: gate-improving children / children parented"
+                    >
+                      TS {m.child_successes ?? 0}/{m.child_trials}
+                    </span>
+                  ) : null}
+                  <span className="font-mono text-xs tabular-nums text-zinc-300">
+                    BBε {signed(m.bbe)}
+                  </span>
+                </div>
               </div>
 
               <div className="mt-2 flex flex-wrap items-center gap-1.5">

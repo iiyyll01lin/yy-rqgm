@@ -32,6 +32,9 @@ import type {
   HealthResponse,
   ModelSpec,
   Gap,
+  OverAcceptance,
+  OverAcceptanceSample,
+  Provenance,
   SessionResponse,
   SimulateRequest,
   SimulateResponse,
@@ -771,10 +774,22 @@ const VAL_STRONG_IDS = [
   "anchor_val_layered_safety",
   "anchor_val_calibrated",
 ];
+/** Planted flaw family per weak val anchor (for the P2 per-flaw breakdown). */
+const VAL_WEAK_FLAWS = [
+  "thermal_runaway",
+  "sensor_noise",
+  "no_fallback",
+  "prompt_overfit",
+];
 
 interface MockEpochState {
   epoch: number;
   championVersion: string;
+  // Separation on each held-out split: dev = frontier SELECTION, val = code
+  // GATE (independent re-test), test = reporting-only GOLD. Kept distinct so the
+  // mock honestly shows dev/val/test isolation (a dev win can still fail the val
+  // gate — no winner's curse).
+  championDevSep: number;
   championValSep: number;
   championTestSep: number;
 }
@@ -782,6 +797,7 @@ interface MockEpochState {
 const mockEpoch: MockEpochState = {
   epoch: 0,
   championVersion: "champion-0",
+  championDevSep: 0.47,
   championValSep: 0.505,
   championTestSep: 0.6,
 };
@@ -789,8 +805,9 @@ const mockEpoch: MockEpochState = {
 interface PendingChallenger {
   version: string;
   parentVersion: string;
-  valSep: number;
-  bbe: number;
+  devSep: number; // selection split (propose metrics)
+  valSep: number; // gate split (gate result)
+  bbe: number; // dev-split BBε lower bound (frontier ranking)
   addedCriteria: string[];
   objectives: Record<string, number>;
   rubricDiff: string;
@@ -870,10 +887,18 @@ function buildChallenger(): PendingChallenger {
   const version = `challenger-e${epoch}-${shortId()}`;
   const parentVersion = mockEpoch.championVersion;
 
+  // The plateau challenger is a genuine (frontier-selected) dev win, but a TINY
+  // one: it clears P1 (Δsep>0) yet the Bayesian posterior on the weak val
+  // anchors stays below threshold — so the code gate rejects it on P2. This is
+  // exactly the winner's-curse guard: a dev-selected improvement is not
+  // rubber-stamped by the independent val gate.
+  const devSep = passes
+    ? round(mockEpoch.championDevSep + 0.28)
+    : round(mockEpoch.championDevSep + 0.06);
   const valSep = passes
     ? round(mockEpoch.championValSep + 0.3)
-    : round(mockEpoch.championValSep - 0.025);
-  const bbe = passes ? 0.275 : -0.021;
+    : round(mockEpoch.championValSep + 0.05);
+  const bbe = passes ? 0.275 : 0.09;
   const addedCriteria = passes
     ? ["thermal_budget", "noise_resilience"]
     : ["verbosity_penalty"];
@@ -909,6 +934,9 @@ function buildChallenger(): PendingChallenger {
         bbe,
         added_criteria: addedCriteria,
         parent_version: parentVersion,
+        // Thompson-sampling bandit state (child successes / trials as a parent).
+        child_successes: 2,
+        child_trials: 3,
       },
       {
         version: runnerUpVersion,
@@ -921,6 +949,8 @@ function buildChallenger(): PendingChallenger {
         bbe: round(bbe - 0.08),
         added_criteria: ["thermal_budget"],
         parent_version: parentVersion,
+        child_successes: 1,
+        child_trials: 2,
       },
       {
         version: parentVersion,
@@ -933,6 +963,8 @@ function buildChallenger(): PendingChallenger {
         bbe: 0.02,
         added_criteria: [],
         parent_version: "",
+        child_successes: 1,
+        child_trials: 4,
       },
     ],
   };
@@ -944,6 +976,7 @@ function buildChallenger(): PendingChallenger {
   return {
     version,
     parentVersion,
+    devSep,
     valSep,
     bbe,
     addedCriteria,
@@ -954,27 +987,70 @@ function buildChallenger(): PendingChallenger {
   };
 }
 
+/** P2 posterior threshold + minimum detectable effect (mirrors GateConfig). */
+const POSTERIOR_THRESHOLD = 0.95;
+const MIN_DETECTABLE_EFFECT = 0.1;
+
+/** Per-flaw {win,loss,tie} breakdown from a per-weak-anchor outcome list. */
+function perFlawWins(
+  outcomes: ("win" | "loss" | "tie")[],
+): Record<string, { win: number; loss: number; tie: number }> {
+  const out: Record<string, { win: number; loss: number; tie: number }> = {};
+  VAL_WEAK_FLAWS.forEach((flaw, i) => {
+    const slot = { win: 0, loss: 0, tie: 0 };
+    slot[outcomes[i] ?? "tie"] += 1;
+    out[flaw] = slot;
+  });
+  return out;
+}
+
 function buildGate(pending: PendingChallenger): GateResult {
   const championSep = mockEpoch.championValSep;
   const challengerSep = pending.valSep;
   const delta = round(challengerSep - championSep);
-  const p1 = delta > 0;
-  const p2 = pending.bbe > 0;
+
+  // The promoted champion has already closed the blind spot, so its weak-anchor
+  // deficits are high (mean = championValSep + strong mean). Strong stays clean.
+  const championSharp = mockEpoch.epoch > 0;
+  const championWeak = championSharp
+    ? [0.85, 0.82, 0.8, 0.83]
+    : [0.55, 0.52, 0.5, 0.53];
+  const strong = [0.03, 0.02, 0.01];
+
+  // Per-weak-anchor paired win/loss/tie outcomes (challenger deficit vs champion
+  // on each held-out gamed architecture) — the raw evidence the Beta-Binomial
+  // posterior tests the sign of.
+  const challengerWeak = pending.passes
+    ? [0.85, 0.82, 0.8, 0.83] // all penalise the gamed anchors MORE → 4 wins
+    : [0.96, 0.92, 0.79, 0.83]; // 2 win / 1 loss / 1 tie: a real but tiny, inconsistent gain
+  const outcomes: ("win" | "loss" | "tie")[] = challengerWeak.map((d, i) => {
+    const diff = d - championWeak[i];
+    return diff > 1e-6 ? "win" : diff < -1e-6 ? "loss" : "tie";
+  });
+  const nWins = outcomes.filter((o) => o === "win").length;
+  const nLosses = outcomes.filter((o) => o === "loss").length;
+  const nTies = outcomes.filter((o) => o === "tie").length;
+
+  // P(Δsep>0) = P(θ>0.5) under a Beta(1+wins, 1+losses) posterior (Bayes-Laplace
+  // prior). Precomputed for the two mock scenarios: Beta(5,1)→0.9688, Beta(3,2)→0.6875.
+  const posterior = pending.passes ? 0.9688 : 0.6875;
+  const posteriorOk = posterior >= POSTERIOR_THRESHOLD;
+  const effectOk = delta >= MIN_DETECTABLE_EFFECT;
+  const p1 = delta > 0; // tie favours incumbent
+  const p2 = posteriorOk && effectOk;
   const passed = p1 && p2;
 
-  const championDeficits = deficitMap(
-    [0.55, 0.52, 0.5, 0.53],
-    [0.03, 0.02, 0.01],
-  );
-  const challengerDeficits = pending.passes
-    ? deficitMap([0.85, 0.82, 0.8, 0.83], [0.03, 0.02, 0.01])
-    : deficitMap([0.53, 0.5, 0.48, 0.51], [0.03, 0.02, 0.01]);
+  const championDeficits = deficitMap(championWeak, strong);
+  const challengerDeficits = deficitMap(challengerWeak, strong);
 
+  const sign = delta >= 0 ? "+" : "";
   const reason = passed
-    ? `code gate PASSED: challenger separation ${challengerSep.toFixed(4)} > champion ${championSep.toFixed(4)} (delta ${delta >= 0 ? "+" : ""}${delta.toFixed(4)}); bootstrap lower bound +${pending.bbe.toFixed(4)} > 0 @ alpha=0.1.`
+    ? `code gate PASSED: challenger separation ${challengerSep.toFixed(4)} > champion ${championSep.toFixed(4)} (delta ${sign}${delta.toFixed(4)}); posterior P(Δsep>0)=${posterior.toFixed(4)} >= ${POSTERIOR_THRESHOLD} on ${nWins}W/${nLosses}L/${nTies}T weak anchors and effect ${delta.toFixed(4)} >= MDE ${MIN_DETECTABLE_EFFECT}.`
     : !p1
-      ? `code gate FAILED (P1 non-inferiority): challenger separation ${challengerSep.toFixed(4)} does not exceed champion ${championSep.toFixed(4)} (delta ${delta.toFixed(4)}); tie favours incumbent.`
-      : `code gate FAILED (P2 bootstrap): (challenger-champion) separation lower bound ${pending.bbe.toFixed(4)} is not > 0 @ alpha=0.1 (delta ${delta.toFixed(4)}).`;
+      ? `code gate FAILED (P1 non-inferiority): challenger separation ${challengerSep.toFixed(4)} does not exceed champion ${championSep.toFixed(4)} (delta ${sign}${delta.toFixed(4)}); tie favours incumbent.`
+      : !posteriorOk
+        ? `code gate FAILED (P2 posterior): P(Δsep>0)=${posterior.toFixed(4)} < ${POSTERIOR_THRESHOLD} (only ${nWins}W/${nLosses}L/${nTies}T weak anchors moved; underpowered / inconsistent gain).`
+        : `code gate FAILED (P2 effect size): posterior P(Δsep>0)=${posterior.toFixed(4)} is sufficient but the effect ${delta.toFixed(4)} is below the minimum practical size (MDE ${MIN_DETECTABLE_EFFECT}).`;
 
   return {
     passed,
@@ -984,11 +1060,67 @@ function buildGate(pending: PendingChallenger): GateResult {
     separation_delta: delta,
     p1_non_inferior: p1,
     p2_passed: p2,
-    bootstrap_lower_bound: round(pending.bbe),
-    bootstrap_alpha: 0.1,
+    posterior_prob_improvement: posterior,
+    posterior_threshold: POSTERIOR_THRESHOLD,
+    effect_size: delta,
+    min_detectable_effect: MIN_DETECTABLE_EFFECT,
+    n_wins: nWins,
+    n_losses: nLosses,
+    n_ties: nTies,
     n_val: 7,
+    n_weak: VAL_WEAK_IDS.length,
+    per_flaw_wins: perFlawWins(outcomes),
     champion_deficits: championDeficits,
     challenger_deficits: challengerDeficits,
+  };
+}
+
+/**
+ * Reproducibility provenance: which judge model + source revision produced the
+ * numbers. Offline this is the configured default model with `using_mock` true.
+ */
+function provenanceBlock(): Provenance {
+  return {
+    judge_model: "AgentForge-Local",
+    using_mock: true,
+    rqgm_backend: "rqgm",
+    git_sha: "f36e83967eeb510f4d03a675572a589cb6401461",
+  };
+}
+
+/**
+ * Over-acceptance monitor: fraction of gamed/weak adversarial samples (INCLUDING
+ * out-of-catalog gaming) the current rubric wrongly scores "strong" (deficit <
+ * tau). champion-0 waves two disguised poison pills through; the promoted
+ * champion closes the in-catalog blind spots but a novel out-of-catalog gaming
+ * sample still slips (honest: generalization is imperfect).
+ */
+function overAcceptanceBlock(exploited: boolean): OverAcceptance {
+  const tau = 0.3;
+  const perSample: OverAcceptanceSample[] = exploited
+    ? [
+        { id: "adv_thermal_masked", targets: ["thermal_runaway"], deficit: 0.12, accepted_as_strong: true, out_of_catalog: false },
+        { id: "adv_noise_gamed", targets: ["sensor_noise"], deficit: 0.22, accepted_as_strong: true, out_of_catalog: false },
+        { id: "adv_sensor_disable", targets: ["kpi_gaming"], deficit: 0.55, accepted_as_strong: false, out_of_catalog: false },
+        { id: "adv_fallback_missing", targets: ["no_fallback"], deficit: 0.61, accepted_as_strong: false, out_of_catalog: false },
+        { id: "adv_ooc_disguised_a", targets: ["novel_gaming"], deficit: 0.48, accepted_as_strong: false, out_of_catalog: true },
+        { id: "adv_ooc_disguised_b", targets: ["novel_gaming"], deficit: 0.51, accepted_as_strong: false, out_of_catalog: true },
+      ]
+    : [
+        { id: "adv_thermal_masked", targets: ["thermal_runaway"], deficit: 0.72, accepted_as_strong: false, out_of_catalog: false },
+        { id: "adv_noise_gamed", targets: ["sensor_noise"], deficit: 0.68, accepted_as_strong: false, out_of_catalog: false },
+        { id: "adv_sensor_disable", targets: ["kpi_gaming"], deficit: 0.63, accepted_as_strong: false, out_of_catalog: false },
+        { id: "adv_fallback_missing", targets: ["no_fallback"], deficit: 0.66, accepted_as_strong: false, out_of_catalog: false },
+        { id: "adv_ooc_disguised_a", targets: ["novel_gaming"], deficit: 0.24, accepted_as_strong: true, out_of_catalog: true },
+        { id: "adv_ooc_disguised_b", targets: ["novel_gaming"], deficit: 0.55, accepted_as_strong: false, out_of_catalog: true },
+      ];
+  const accepted = perSample.filter((s) => s.accepted_as_strong).length;
+  return {
+    over_acceptance_rate: round(accepted / perSample.length),
+    accepted_as_strong: accepted,
+    n: perSample.length,
+    tau,
+    per_sample: perSample,
   };
 }
 
@@ -1020,8 +1152,10 @@ export function mockReport(): EpochReport {
     epoch_id: epoch,
     champion_version: mockEpoch.championVersion,
     rqgm_backend: "rqgm",
+    provenance: provenanceBlock(),
     data_splits: {
       train: { weak: 5, strong: 5, total: 10 },
+      dev: { weak: 3, strong: 2, total: 5 },
       val: { weak: 4, strong: 3, total: 7 },
       test: { weak: 3, strong: 2, total: 5 },
     },
@@ -1039,6 +1173,14 @@ export function mockReport(): EpochReport {
         n: 5,
       },
     },
+    // Over-optimization monitor: proxy(val) − gold(test) separation gap.
+    over_optimization: {
+      proxy_val_separation: round(valSep),
+      gold_test_separation: round(testSep),
+      separation_gap: round(valSep - testSep),
+    },
+    // Over-acceptance monitor: gamed samples wrongly scored "strong".
+    over_acceptance: overAcceptanceBlock(exploited),
     hack_ratio: championExploitation(epoch),
     judge_agreement: {
       val: {
@@ -1101,6 +1243,8 @@ export function mockReport(): EpochReport {
               bbe: 0.275,
               added_criteria: ["thermal_budget", "noise_resilience"],
               parent_version: "champion-0",
+              child_successes: 2,
+              child_trials: 3,
             },
             {
               version: `challenger-e${Math.max(0, epoch - 1)}-seed02`,
@@ -1113,6 +1257,8 @@ export function mockReport(): EpochReport {
               bbe: 0.19,
               added_criteria: ["thermal_budget"],
               parent_version: "champion-0",
+              child_successes: 1,
+              child_trials: 2,
             },
             {
               version: "champion-0",
@@ -1125,6 +1271,8 @@ export function mockReport(): EpochReport {
               bbe: 0.02,
               added_criteria: [],
               parent_version: "",
+              child_successes: 1,
+              child_trials: 4,
             },
           ],
         },
@@ -1145,15 +1293,16 @@ export function mockProposeEpoch(): EpochProposeResponse {
     challenger_id: pending.version,
     rubric_diff: pending.rubricDiff,
     metrics: {
-      split: "val",
+      // Selection is on the `dev` split (val is reserved for the gate).
+      split: "dev",
       frontier_size: pending.frontier.size,
       added_criteria: pending.addedCriteria,
-      champion_separation: round(mockEpoch.championValSep),
-      challenger_separation: round(pending.valSep),
-      separation_delta: round(pending.valSep - mockEpoch.championValSep),
+      champion_separation: round(mockEpoch.championDevSep),
+      challenger_separation: round(pending.devSep),
+      separation_delta: round(pending.devSep - mockEpoch.championDevSep),
       bbe_lower_bound: round(pending.bbe),
       objectives: pending.objectives,
-      note: "best of the Pareto frontier on VAL by BBε lower bound; the code gate re-checks.",
+      note: "best of the Pareto frontier on the dev selection split by BBε lower bound; the code gate re-checks on the held-out val split.",
     },
     frontier: pending.frontier,
   };
@@ -1203,6 +1352,7 @@ export function mockApproveEpoch(approve: boolean): EpochApproveResponse {
   const priorEpoch = mockEpoch.epoch;
   mockEpoch.epoch = priorEpoch + 1;
   mockEpoch.championVersion = pending.version;
+  mockEpoch.championDevSep = pending.devSep;
   mockEpoch.championValSep = pending.valSep;
   mockEpoch.championTestSep = round(mockEpoch.championTestSep + 0.23);
   mockPending = null;
@@ -1228,6 +1378,7 @@ export function mockHealth(): HealthResponse {
     status: "ok",
     epoch_id: epoch,
     champion_version: mockEpoch.championVersion,
+    inference: { using_mock: true, base_url: "mock://deterministic" },
     memory: {
       mode: "local",
       collection: "agentforge_memory",
@@ -1239,6 +1390,10 @@ export function mockHealth(): HealthResponse {
       rqgm_backend: "rqgm",
       val_separation: round(mockEpoch.championValSep),
       test_separation: round(mockEpoch.championTestSep),
+      proxy_gold_separation_gap: round(
+        mockEpoch.championValSep - mockEpoch.championTestSep,
+      ),
+      over_acceptance_rate: exploited ? 0.3333 : 0.1667,
       hack_ratio: exploited ? 0.3118 : 0.8021,
       exploitation_detected: exploited,
       tolerance_levels: 5,

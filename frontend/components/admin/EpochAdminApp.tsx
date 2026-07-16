@@ -31,6 +31,9 @@ import {
   DataSplitsCard,
   JudgeAgreementCard,
   MemoryCard,
+  OverAcceptanceCard,
+  OverOptimizationCard,
+  ProvenanceCard,
   SeparationCard,
 } from "./ReportPanels";
 import {
@@ -98,6 +101,8 @@ function evaluatorFrom(
       rqgm_backend: report.rqgm_backend,
       val_separation: report.separation.val.separation,
       test_separation: report.separation.test.separation,
+      proxy_gold_separation_gap: report.over_optimization.separation_gap,
+      over_acceptance_rate: report.over_acceptance.over_acceptance_rate,
       hack_ratio: report.hack_ratio.mean_hack_ratio,
       exploitation_detected: report.hack_ratio.exploitation_detected,
       tolerance_levels: report.hack_ratio.tolerances_after.length,
@@ -131,9 +136,19 @@ function SummaryStrip({
         </div>
       </div>
       {ev ? (
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Stat label="Val separation" value={ev.val_separation.toFixed(3)} />
           <Stat label="Test separation" value={ev.test_separation.toFixed(3)} />
+          <Stat
+            label="Proxy−Gold gap"
+            value={`${ev.proxy_gold_separation_gap >= 0 ? "+" : ""}${ev.proxy_gold_separation_gap.toFixed(3)}`}
+            accent={ev.proxy_gold_separation_gap > 0.15 ? "#f87171" : undefined}
+          />
+          <Stat
+            label="Over-acceptance"
+            value={pct(ev.over_acceptance_rate)}
+            accent={ev.over_acceptance_rate > 0.2 ? "#f87171" : undefined}
+          />
           <Stat
             label="Hack ratio"
             value={ev.hack_ratio == null ? "—" : ev.hack_ratio.toFixed(3)}
@@ -451,14 +466,21 @@ export function EpochAdminApp() {
                   val={report.separation.val}
                   test={report.separation.test}
                 />
+                <OverOptimizationCard data={report.over_optimization} />
+              </div>
+              <OverAcceptanceCard data={report.over_acceptance} />
+              <div className="grid gap-4 lg:grid-cols-2">
                 <JudgeAgreementCard
                   val={report.judge_agreement.val}
                   test={report.judge_agreement.test}
                 />
+                <ExploitationSummaryCard report={report.hack_ratio} />
               </div>
               <div className="grid gap-4 lg:grid-cols-2">
-                <ExploitationSummaryCard report={report.hack_ratio} />
                 <MemoryCard memory={report.memory} />
+                {report.provenance ? (
+                  <ProvenanceCard provenance={report.provenance} />
+                ) : null}
               </div>
               {!proposal ? (
                 <FrontierPanel

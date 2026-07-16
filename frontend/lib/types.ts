@@ -222,18 +222,71 @@ export interface FeedbackResponse {
 /* report (data splits, val/test separation, judge agreement, memory).     */
 /* --------------------------------------------------------------------- */
 
-/** Per-split anchor counts (train / val / test isolation). */
+/** Per-split anchor counts (train / dev / val / test isolation). */
 export interface SplitCount {
   weak: number;
   strong: number;
   total: number;
 }
 
-/** Anchor dataset split counts used by GEPA (train) / gate (val) / report (test). */
+/**
+ * Anchor dataset split counts across the four disjoint splits (data isolation):
+ * `train` drives GEPA mutation, `dev` RANKS/SELECTS the Pareto frontier, `val`
+ * is scored ONLY by the code gate, and `test` is reporting-only. Selecting on
+ * `dev` (a split the gate never sees) removes the winner's curse so the `val`
+ * gate is a genuine held-out re-test.
+ */
 export interface DataSplits {
   train: SplitCount;
+  dev: SplitCount;
   val: SplitCount;
   test: SplitCount;
+}
+
+/**
+ * Reproducibility provenance recorded with a report: which judge model + source
+ * revision produced the numbers. NOTE: this block is emitted by the backend's
+ * `build_report`, but is optional here because the `EpochReportResponse` pydantic
+ * model does not (yet) declare it, so it is only guaranteed in Mock mode.
+ */
+export interface Provenance {
+  judge_model: string;
+  using_mock: boolean | null;
+  rqgm_backend: string;
+  git_sha: string | null;
+}
+
+/**
+ * Over-optimization monitor: proxy(val) − gold(test) separation gap. A large
+ * positive gap means the champion looks much sharper on the split closer to the
+ * optimization loop (`val`, the gate split) than on the untouched gold `test`.
+ */
+export interface OverOptimization {
+  proxy_val_separation: number;
+  gold_test_separation: number;
+  separation_gap: number;
+}
+
+/** One adversarial sample in the over-acceptance monitor. */
+export interface OverAcceptanceSample {
+  id: string;
+  targets: string[];
+  deficit: number;
+  accepted_as_strong: boolean;
+  out_of_catalog: boolean;
+}
+
+/**
+ * Over-acceptance monitor: fraction of gamed/weak adversarial samples (incl.
+ * out-of-catalog gaming) the current rubric wrongly scores as "strong"
+ * (deficit < tau). High = the judge is fooled by disguised poison pills.
+ */
+export interface OverAcceptance {
+  over_acceptance_rate: number;
+  accepted_as_strong: number;
+  n: number;
+  tau: number;
+  per_sample: OverAcceptanceSample[];
 }
 
 /** Weak-vs-strong deficit separation on one held-out split. */
@@ -288,6 +341,10 @@ export interface FrontierMember {
   bbe: number;
   added_criteria: string[];
   parent_version: string;
+  // Thompson-sampling bandit state: how many children this member parented and
+  // how many of them were gate-improving (survived Pareto + raised BBε).
+  child_successes?: number;
+  child_trials?: number;
 }
 
 /** Pareto frontier summary — top-K non-dominated challenger rubrics. */
@@ -314,18 +371,37 @@ export interface EpochReport {
   epoch_id: number;
   champion_version: string;
   rqgm_backend: string;
+  // Optional: emitted by build_report but not declared on the backend response
+  // model, so only guaranteed present in Mock mode (rendered when available).
+  provenance?: Provenance;
   data_splits: DataSplits;
   separation: { val: SplitSeparation; test: SplitSeparation };
+  // proxy(val) − gold(test) over-optimization gap.
+  over_optimization: OverOptimization;
+  // fraction of gamed/weak adversarial samples wrongly scored "strong".
+  over_acceptance: OverAcceptance;
   hack_ratio: ExploitationReport;
   judge_agreement: { val: JudgeAgreement; test: JudgeAgreement };
   frontier: Frontier;
   memory: MemoryStats;
 }
 
+/** Per-flaw-family win/loss/tie breakdown for the P2 posterior (transparency). */
+export interface FlawWinCounts {
+  win: number;
+  loss: number;
+  tie: number;
+}
+
 /**
- * The code gate result (Stage 1) — the anti-reward-hacking core: P1
- * non-inferiority (`challenger_sep >= champion_sep`, ties favour the incumbent)
- * and P2 paired-bootstrap CI (`bootstrap_lower_bound > 0`) on held-out VAL.
+ * The code gate result (Stage 1) — the anti-reward-hacking core, scored ONLY on
+ * the held-out `val` split:
+ * - **P1 non-inferiority**: `challenger_sep > champion_sep` (ties favour the incumbent);
+ * - **P2 Bayesian Beta-Binomial posterior**: `posterior_prob_improvement`
+ *   (= `P(Δsep>0)` from a Beta posterior over per-anchor paired win indicators on
+ *   the weak anchors) must clear `posterior_threshold`, AND the observed
+ *   `effect_size` (= `separation_delta`) must clear `min_detectable_effect` (MDE).
+ * A per-flaw-family win/loss/tie breakdown is reported for transparency.
  */
 export interface GateResult {
   passed: boolean;
@@ -335,9 +411,17 @@ export interface GateResult {
   separation_delta: number;
   p1_non_inferior: boolean;
   p2_passed: boolean;
-  bootstrap_lower_bound: number;
-  bootstrap_alpha: number;
+  // P2 (Bayesian) transparency — replaces the old bootstrap CI fields.
+  posterior_prob_improvement: number; // P(Δsep>0) = P(θ>0.5)
+  posterior_threshold: number;
+  effect_size: number; // == separation_delta (the MDE test target)
+  min_detectable_effect: number; // MDE
+  n_wins: number;
+  n_losses: number;
+  n_ties: number;
   n_val: number;
+  n_weak: number;
+  per_flaw_wins: Record<string, FlawWinCounts>;
   champion_deficits: Record<string, number>;
   challenger_deficits: Record<string, number>;
 }
@@ -353,7 +437,12 @@ export interface HitlResult {
   vetoed: boolean;
 }
 
-/** Metrics for the frontier's best member (on VAL) returned by /epoch/propose. */
+/**
+ * Metrics for the frontier's best member returned by /epoch/propose. Separation
+ * is reported on the `dev` SELECTION split (`split: "dev"`); the code gate
+ * independently re-checks on the held-out `val` split. (The single-mutation
+ * fallback reports `split: "train"`.)
+ */
 export interface ProposeMetrics {
   split: string;
   frontier_size?: number;
@@ -398,6 +487,10 @@ export interface EvaluatorHealth {
   rqgm_backend: string;
   val_separation: number;
   test_separation: number;
+  // proxy(val) − gold(test) over-optimization gap.
+  proxy_gold_separation_gap: number;
+  // fraction of gamed/weak adversarial samples wrongly scored "strong".
+  over_acceptance_rate: number;
   hack_ratio: number | null;
   exploitation_detected: boolean;
   tolerance_levels: number;
@@ -405,11 +498,18 @@ export interface EvaluatorHealth {
   val_judge_kappa: number;
 }
 
+/** Inference backend status surfaced on GET /health. */
+export interface InferenceHealth {
+  using_mock: boolean;
+  base_url: string;
+}
+
 /** Subset of GET /health consumed by the epoch-admin surface. */
 export interface HealthResponse {
   status: string;
   epoch_id: number;
   champion_version: string;
+  inference?: InferenceHealth;
   memory?: MemoryStats;
   evaluator?: EvaluatorHealth | { error: string };
 }
