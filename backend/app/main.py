@@ -37,6 +37,15 @@ async def lifespan(app: FastAPI):
     except Exception:
         # Non-fatal: the contract endpoints work without the orchestrator warmed.
         pass
+    # Seed physics_truth memories (idempotent) so the evaluator's hybrid-search
+    # retrieval has physical facts available from the start.
+    try:
+        from backend.gatekeeper.physics_memory import seed_physics_truths
+        from backend.memory import get_memory
+
+        seed_physics_truths(get_memory())
+    except Exception:
+        pass
     yield
 
 
@@ -88,4 +97,10 @@ def health() -> dict[str, Any]:
         info["memory"] = get_memory().stats()
     except Exception as exc:  # pragma: no cover
         info["memory"] = {"error": str(exc)}
+    try:
+        from backend.evaluator import report
+
+        info["evaluator"] = report.health_summary(client)
+    except Exception as exc:  # pragma: no cover
+        info["evaluator"] = {"error": str(exc)}
     return info

@@ -10,12 +10,23 @@ from __future__ import annotations
 from typing import Any
 
 from backend.gatekeeper import feasibility
+from backend.gatekeeper.physics_memory import seed_physics_truths
 from backend.gatekeeper.spec import get_model, get_tier
 from backend.graph.state import GraphState
 
 
 def gatekeeper_node(state: GraphState) -> dict[str, Any]:
     trace = list(state.get("trace", []))
+
+    # The deterministic gatekeeper is the source of physics_truth memories the
+    # evaluator later retrieves; seed them here (idempotent) so evolution never
+    # has to invent physics. physics_truth is preserved forever (Iron Law I).
+    try:
+        from backend.memory import get_memory
+
+        seed_physics_truths(get_memory())
+    except Exception:
+        pass
     model_id = state.get("model_id")
     tier_id = state.get("tier_id")
     seq_len = int(state.get("seq_len", 4096))

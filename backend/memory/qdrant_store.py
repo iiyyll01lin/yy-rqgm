@@ -202,6 +202,50 @@ class EvolutionaryMemory:
             )
         return hits
 
+    # -- read (non-semantic scan for selective erasure) --------------------
+    def fetch(
+        self,
+        memory_type: MemoryType | str | None = None,
+        max_epoch: int | None = None,
+        active_only: bool = True,
+        limit: int = 10000,
+    ) -> list[MemoryHit]:
+        """Scan (no vector query) memories matching payload filters.
+
+        Used by selective erasure to enumerate candidate ``heuristic_failure``
+        memories for reconfirmation. ``physics_truth`` is simply never requested.
+        """
+        conditions: list[qm.FieldCondition] = []
+        if memory_type is not None:
+            mt = memory_type.value if isinstance(memory_type, MemoryType) else str(memory_type)
+            conditions.append(qm.FieldCondition(key="memory_type", match=qm.MatchValue(value=mt)))
+        if active_only:
+            conditions.append(qm.FieldCondition(key="active", match=qm.MatchValue(value=True)))
+        if max_epoch is not None:
+            conditions.append(qm.FieldCondition(key="created_at_epoch", range=qm.Range(lte=max_epoch)))
+        query_filter = qm.Filter(must=conditions) if conditions else None
+        points, _ = self.client.scroll(
+            collection_name=self.collection,
+            scroll_filter=query_filter,
+            limit=limit,
+            with_payload=True,
+        )
+        hits: list[MemoryHit] = []
+        for p in points:
+            payload = p.payload or {}
+            hits.append(
+                MemoryHit(
+                    id=str(p.id),
+                    text=str(payload.get("text", "")),
+                    memory_type=str(payload.get("memory_type", "")),
+                    created_at_epoch=int(payload.get("created_at_epoch", 0)),
+                    active=bool(payload.get("active", True)),
+                    score=0.0,
+                    payload=payload,
+                )
+            )
+        return hits
+
     # -- soft delete / selective erasure -----------------------------------
     def soft_delete(self, ids: list[str]) -> int:
         """Mark points inactive (reversible)."""
@@ -210,6 +254,17 @@ class EvolutionaryMemory:
         self.client.set_payload(
             collection_name=self.collection,
             payload={"active": False},
+            points=list(ids),
+        )
+        return len(ids)
+
+    def mark_reconfirmed(self, ids: list[str], epoch: int) -> int:
+        """Stamp ``reconfirmed_epoch`` on memories the new champion still endorses."""
+        if not ids:
+            return 0
+        self.client.set_payload(
+            collection_name=self.collection,
+            payload={"reconfirmed_epoch": int(epoch)},
             points=list(ids),
         )
         return len(ids)
