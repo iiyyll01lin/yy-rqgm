@@ -12,7 +12,7 @@
 - 任何請求先過 `Static Hardware Gatekeeper`（物理閘門）。物理不可行的東西，連 LLM 都不用叫——省算力、零幻覺、可稽核。
 - 只有物理可行的請求，才交給會花錢的 `RQGM Evaluator`（品味閘門）去判「這個 agent 架構在這個 domain 到底好不好」。
 
-這個順序不是效能優化的副產品，而是**信任模型的體現**：我們願意讓 fuzzy 的判斷進化，但**絕不讓進化的東西凌駕於物理之上**。因此 Gatekeeper 永遠在 Evaluator 上游。
+這個順序不是效能優化的副產品，而是**信任模型的體現**：我們願意讓 fuzzy 的東西進化——**兩個 fuzzy 半（task-agent 選手 + evaluator 裁判）都 co-evolve**（見 §6、[`03-evaluator.md`](./03-evaluator.md) §7）——但**絕不讓進化的東西凌駕於物理之上**。因此 Gatekeeper 永遠在 Evaluator 上游，且物理層永不進化。
 
 我們用 **LangGraph** 把這條線實作成一張 `StateGraph`。選 LangGraph 的理由很務實：它把 **state schema、checkpointer、human-in-the-loop（`interrupt()`）** 當一等公民，正好對應本平台三個硬需求——可稽核的狀態、可回復的長流程、可插入的人工核准。
 
@@ -233,9 +233,11 @@ epoch 生命週期：
 
 1. **Epoch 內（frozen）**：hot path 所有判斷都由**同一個** frozen evaluator 產生，並蓋上 `epoch_id`。此期間 cold path 可以盡情 GEPA mutation，但產出的 challenger **不上線**。
 2. **Epoch 邊界（gating）**：challenger（GEPA 在 `dev` 選擇split 上選出的 frontier best）必須先過一道 **code 統計 gate**——在 **held-out labeled anchor（`val` split）** 上以 P1 非劣（平手偏袒現任）+ **P2 Bayesian Beta-Binomial 後驗 `P(Δsep>0)≥0.95` 且效果 `Δsep≥MDE`** 勝過 incumbent，並用 strict/loose **hack-ratio**（官方 `rqgm` 套件）偵測 reward hacking。通過後 HITL 才被諮詢，且**只能否決、不能覆寫失敗的 gate**（見 [`03-evaluator.md`](./03-evaluator.md) §6）。
-3. **升級後（selective erasure）**：對「其效用值依賴被替換 evaluator」的 `heuristic_failure` 記錄做 **soft-delete + 新 champion reconfirm**（靠 `created_at_epoch` 過濾）——保留仍有效者、軟刪不再確認者、延後硬 purge；`physics_truth` 永久保留。**非全量清空**——這是與「每次重訓歸零」最關鍵的差異。
+3. **升級後（selective erasure）**：對「其效用值依賴被替換 evaluator」的 `heuristic_failure` 記錄做 **soft-delete + 新 champion reconfirm**（靠 `created_at_epoch` 過濾）——保留仍有效者、軟刪不再確認者、延後硬 purge；`physics_truth` 永久保留。**非全量清空**——這是與「每次重訓歸零」最關鍵的差異。**同一個邊界也觸發 agent 半的效用 selective erasure**（見下）。
 
-> 為什麼 evaluator 必須在進化 harness *之外*：若讓「解法」與「評分者」在同一迴圈內共同進化，系統會學會 reward hacking（生成專門討好當前評分者的解法）。把 evaluator 凍結在 epoch 內、且升級要過*外部* anchor 上的 **code gate**（proposer 只看 `train`、碰不到 `val`/`test`），就從結構上斷了這條捷徑。完整論證見 [`03-evaluator.md`](./03-evaluator.md) §7。
+> **兩個 epoch、兩半 co-evolution**：平台其實有**兩個**進化的 fuzzy 半，各自帶一個 epoch——**evaluator epoch**（本節）與 **agent epoch**（[`backend/agent/agent_versioning.py`](../backend/agent/agent_versioning.py)）。task-agent（選手）也進化：它在 [`agent_evolve.py`](../backend/agent/agent_evolve.py) 跑 GEPA program frontier，晉升 gate 在 held-out `val` **needs** 上、**以當期凍結的 champion evaluator 評分**勝過 champion agent 才過（agent epoch++）。關鍵不對稱——**agent 的裁判是凍結的 evaluator，evaluator 的裁判是 held-out anchor**——兩半各由不同裁判把關。當 **evaluator epoch 升級**時，除了上面的記憶 erasure，還會呼叫 [`agent_evolve.selective_erasure_agent`](../backend/agent/agent_evolve.py)（掛在 [`evolve.approve_challenger`](../backend/evaluator/evolve.py)）**用新 champion 重評整個 agent archive**：只 game 了舊 champion 盲點的 program 在此掉效用。hot path 的 task-agent node 恆採用**當期 champion agent program**（fallback seed）。
+
+> 為什麼「選手也進化」仍不會 reward-hack：若讓「解法」與「評分者」共用**同一裁判**又同時進化，系統會學會 reward hacking（生成專門討好裁判的解法）。本平台**刻意** co-evolve 兩者，靠**不對稱**斷這條捷徑：evaluator 在 epoch 內凍結（agent 無法追逐移動的裁判）、agent 由 frozen champion evaluator 評、evaluator 由**外部** anchor 的 **code gate** 評（proposer 只看 `train`、碰不到 `val`/`test`）。可驗證推論：epoch 內 agent 覆蓋一個「凍結 champion 抓不到的盲點」得到**零** utility 增益。完整論證見 [`03-evaluator.md`](./03-evaluator.md) §7。
 
 ---
 
@@ -328,9 +330,10 @@ flowchart LR
 
 ## 9. 本模組小結
 
-- 控制流恆為 `TaskAgent → Gatekeeper(物理) → Evaluator(品味, frozen) → HITL → Export`；deterministic 永遠擋在 fuzzy 前面。
+- 控制流恆為 `TaskAgent(champion program) → Gatekeeper(物理) → Evaluator(品味, frozen) → HITL → Export`；deterministic 永遠擋在 fuzzy 前面。hot path 的 TaskAgent 採用當期 **champion agent program**（[`backend/agent/`](../backend/agent/)，fallback seed）。
 - HITL 用 LangGraph `interrupt()` + checkpointer + `Command(resume=)` 實作可無限期掛起的核准點，該回饋同時是 ground-truth anchor。
-- Hot/Cold path 用 epoch 邊界縫合；evaluator 在 epoch 內凍結，邊界由 **code 統計 gate（held-out `val`）先行、HITL 只能否決** 受控升級 + selective erasure（soft-delete + reconfirm），且 evaluator 恆在進化 harness 之外以防 reward hacking。
+- Hot/Cold path 用 epoch 邊界縫合；evaluator 在 epoch 內凍結，邊界由 **code 統計 gate（held-out `val`）先行、HITL 只能否決** 受控升級 + selective erasure（soft-delete + reconfirm）。
+- **兩半 co-evolution**：task-agent（選手）與 evaluator（裁判）都進化，各帶一個 epoch。不對稱防 reward hacking——**agent 由凍結 champion evaluator 評、evaluator 由 held-out anchor 評**；evaluator epoch 升級時對 agent 效用做 selective erasure（重評 archive）。詳見 §6、[`03-evaluator.md`](./03-evaluator.md) §7。
 - 智慧製造 anchor 用 Optimizer vs Evaluator 對抗 + **PyTorch surrogate on ROCm**（非 Omniverse）當開源驗證器。
 - Long-horizon 記憶退化的根因是 VRAM 零和取捨；MI300X 192 GB/5.3 TB/s 把取捨消掉，是架構級前提。
 

@@ -33,7 +33,7 @@ AgentForge 是一套跑在 AMD open-source ROCm 技術棧上的「Heuristic AI A
 
 核心設計可濃縮成四句話：
 
-1. **雙閘門（Dual-Gate）**：`Static Hardware Gatekeeper`（deterministic 物理，永不進化）+ `RQGM Evaluator`（fuzzy 品味，受控進化）。物理錯誤零容忍；品味判斷才允許演化。
+1. **雙閘門（Dual-Gate）＋ 雙半 co-evolution**：`Static Hardware Gatekeeper`（deterministic 物理，永不進化）+ `RQGM Evaluator`（fuzzy 品味，受控進化）。物理錯誤零容忍；品味判斷才允許演化。**平台的兩個 fuzzy 半——task-agent（選手）與 evaluator（裁判）——都會進化（co-evolve）**，但守住不對稱：agent 由當期**凍結的 champion evaluator** 評分、evaluator 由 **held-out anchor** 評分（見鐵律 II／IV、[`backend/agent/`](../backend/agent/)）。
 2. **Hot / Cold Path 分離**：使用者互動（wizard、選型、匯出）走**同步 hot path**，毫秒～秒級；昂貴的自我進化（GEPA mutation、population search、DGM-style archive）走**非同步 cold path**，小時～天級。兩者用 **epoch** 這個時間邊界縫合。
 3. **Epoch Freeze + 兩段式 Gating**：evaluator 在一個 epoch 內**凍結**（stationary utility，per-epoch 自我改進保證才成立）；epoch 邊界才允許 challenger 取代 incumbent，且必須先過一道 **code 統計 gate**（held-out labeled anchor `val` 上 P1 非劣 + **P2 Bayesian Beta-Binomial 後驗 `P(Δsep>0)≥0.95` 且 `Δsep≥MDE`**，平手偏袒現任），**HITL 只能否決、不能覆寫失敗的 gate**。升級後做 **selective erasure（soft-delete + reconfirm）**，只軟刪「依賴被替換 evaluator」的 `heuristic_failure` 記錄，`physics_truth` 永久保留。
 4. **AMD Memory 是護城河**：agent 自我進化（MCTS/population search + 巨量 persistent negative-result log）的瓶頸不是算力而是**記憶體容量 × 頻寬**。MI300X 的 **192 GB HBM3 / 5.3 TB/s** 讓「一張卡裝下大 population + 長記憶」從不可能變日常——這是把 DGM 那種 *~$22,000 / 80 iteration* 的天價迴圈壓進可負擔 TCO 的關鍵。
@@ -49,9 +49,9 @@ AgentForge 是一套跑在 AMD open-source ROCm 技術棧上的「Heuristic AI A
 | # | 鐵律 | 理由 | 落地機制 |
 |---|------|------|----------|
 | I | **物理走 deterministic，永不進化** | VRAM/頻寬是硬約束，"進化" 它等於自欺 | `Static Hardware Gatekeeper`（純數學，見 [`02-sizing-math.md`](./02-sizing-math.md)） |
-| II | **只有 fuzzy 的 domain 判斷才進化** | 品味沒有 closed-form，需要從失敗中學 | `RQGM Evaluator` + GEPA（見 [`03-evaluator.md`](./03-evaluator.md)） |
-| III | **Evaluator 在 epoch 內凍結** | stationary utility 才讓 per-epoch 自我改進保證成立 | epoch freeze（見 [`01-orchestration.md`](./01-orchestration.md)） |
-| IV | **Evaluator 必須在進化 harness 之外** | 同時進化「解法」與「評分者」= reward hacking 溫床 | 分離 harness loop（見 [`03-evaluator.md`](./03-evaluator.md)） |
+| II | **物理永不進化；agent 與 evaluator co-evolve（各由不同裁判把關）** | 品味沒有 closed-form，需要從失敗中學；「會設計架構的 agent」同樣要從失敗中進化，否則平台只進化了裁判、沒進化選手 | `Task-Agent 程式`（EvoSkill）＋具體架構 DGM archive，**由當期凍結的 champion evaluator 評分**；`RQGM Evaluator` 仍**由 held-out anchor 評分**（見 [`03-evaluator.md`](./03-evaluator.md) §7、[`backend/agent/`](../backend/agent/)） |
+| III | **Evaluator 在 epoch 內凍結** | stationary utility 才讓 per-epoch 自我改進保證成立；也讓 agent 無法即時觀察／追逐移動的裁判 | epoch freeze（見 [`01-orchestration.md`](./01-orchestration.md)） |
+| IV | **Co-evolution 的唯一防線是不對稱（anti-reward-hacking）** | 若「解法」與「評分者」共用同一裁判、又同時進化，就是 reward hacking 溫床；本平台**刻意** co-evolve 兩者，故必須靠不對稱守住 | ①epoch 內 evaluator 凍結；②**agent 由 frozen champion evaluator 評、evaluator 由 held-out anchor 評（兩個不同裁判）**；③agent 演化無權讀/改 evaluator rubric/gate；④agent 產出的 gamed 樣本回灌 evaluator 對抗池（見 [`03-evaluator.md`](./03-evaluator.md) §7） |
 | V | **升級需通過 held-out ground-truth** | 避免 evaluator 自我感覺良好 | **code 統計 gate**（held-out `val`：P1 非劣 + P2 Bayesian 後驗/MDE）+ HITL veto（見 [`03-evaluator.md`](./03-evaluator.md) §6） |
 | VI | **100% open-source、ROCm-first** | 教育/中小企業可複製；無供應商鎖定 | 全棧開源（見 [`04-stack-export.md`](./04-stack-export.md)） |
 | VII | **模擬要誠實標示** | Tier 4（MI300X）無實機，靠公式模擬 | UI 明示 "SIMULATED"（見 [`04-stack-export.md`](./04-stack-export.md)） |
@@ -79,9 +79,16 @@ flowchart TD
     EpochGate -.->|"selective erasure<br/>soft-delete + reconfirm"| Mem[("Qdrant memory:<br/>heuristic_failure vs physics_truth<br/>+ created_at_epoch")]
     Mem -.->|"hybrid search 供餵養"| Judge
     Loop -.->|"讀取失敗記憶"| Mem
+    %% ---- Agent half (co-evolution): evolves UNDER the frozen champion evaluator ----
+    Judge -.->|"frozen rubric = agent 的裁判<br/>(不對稱：非 anchor)"| AgentLoop["Agent cold path:<br/>GEPA program frontier<br/>+ concrete-arch DGM archive"]
+    AgentLoop -.->|"challenger 在 held-out val needs"| AgentGate{{"AGENT gate<br/>frozen evaluator 評分<br/>勝過 champion agent"}}
+    AgentGate -.->|"pass → agent epoch++"| ChampAgent(["Champion agent program"])
+    ChampAgent -.->|"hot path 採用 champion agent"| Wizard
+    AgentLoop -.->|"gamed 架構 → evaluator 對抗池"| Loop
+    EpochGate -.->|"evaluator epoch++ → agent 效用 selective erasure"| AgentLoop
 ```
 
-**閱讀順序建議**：先看 hot path（`Wizard → Gate → Judge → Export`）理解使用者體驗，再看 cold path（`Feedback → Loop → EpochGate → Judge`）理解自我進化如何*受控地*發生。
+**閱讀順序建議**：先看 hot path（`Wizard → Gate → Judge → Export`）理解使用者體驗，再看 cold path（`Feedback → Loop → EpochGate → Judge`）理解 evaluator 如何*受控地*進化，最後看 agent 半（`Judge(凍結) → AgentLoop → AgentGate → ChampAgent → Wizard`）理解**兩半如何 co-evolve 而不互相 reward-hack**：agent 只由凍結的 champion evaluator 評分，evaluator epoch 邊界則對 agent 效用做 selective erasure。
 
 ---
 
@@ -123,7 +130,9 @@ flowchart TD
 | **RQGM** | *The Red Queen Gödel Machine*（arXiv 2606.26294）的機制概念：把 search 切成 **epoch**，evaluator 在 epoch 內**凍結**；epoch 邊界時 challenger evaluator 唯有在 **held-out human ground-truth anchor** 上統計勝過 incumbent 才接手，接手後做 **selective erasure**。本平台只借用機制、**不使用其名作為產品名**。 |
 | **RSI** | *Recursive Self-Improvement*：系統遞迴地改進「改進自己的能力」。本平台把 RSI 限縮在 evaluator 的 rubric 上，且用 epoch freeze + HITL 把它*馴化*成可稽核。 |
 | **GEPA** | *Genetic-Pareto*（arXiv 2507.19457）：reflective prompt evolution，讀完整 execution trace 當「textual gradient」（Actionable Side Information），用 Pareto frontier 保多樣性；比 RL(GRPO) 少約 **35×** rollouts。本平台的 evaluator-evolution 引擎。其 **System-Aware Merge**（frontier member 間 crossover）以 `evolve.system_aware_merge`（`gepa_evolve(crossover=True)`）**原生實作**；官方 `gepa` 套件離線不可得，評估後延後採用。 |
-| **DGM** | *Darwin Gödel Machine*（arXiv 2505.22954）：archive + open-ended evolution + 實證驗證。其 *80-iteration SWE-bench ≈ $22,000 / ~2 週* 的成本，是本平台把完整迴圈放 cold path 並主打 AMD memory TCO 的實證依據。 |
+| **DGM** | *Darwin Gödel Machine*（arXiv 2505.22954）：archive + open-ended evolution + 實證驗證。其 *80-iteration SWE-bench ≈ $22,000 / ~2 週* 的成本，是本平台把完整迴圈放 cold path 並主打 AMD memory TCO 的實證依據。**已落地為 agent 半的具體架構 archive**：[`backend/agent/concrete_archive.py`](../backend/agent/concrete_archive.py) 對每個 need 維護架構 population，強者→ anchor 候選、gamed 者→ evaluator 對抗池。 |
+| **Agent Program（EvoSkill 基因）** | task-agent 的可進化「基因」= `{system_prompt, skills[], domain_overrides}`（[`backend/agent/agent_program.py`](../backend/agent/agent_program.py)）。champion/challenger/epoch/promote 鏡射 evaluator versioning，狀態存 `data/agent_state.json`。**由當期凍結的 champion evaluator 評分**（`judge.score_candidate` on champion rubric），**而非** held-out needs 的 ground truth——這是 co-evolution 的不對稱鐵則（鐵律 II/IV）。 |
+| **Agent Utility Selective Erasure** | evaluator epoch 升級時，對整個 agent archive 的效用**用新 champion 重評**（鏡射記憶 selective erasure）：只 game 了舊 champion 盲點的 program 會在此掉效用，逼其真正進化（[`backend/agent/agent_evolve.py`](../backend/agent/agent_evolve.py)，掛在 `evolve.approve_challenger`）。 |
 | **Static Hardware Gatekeeper** | Deterministic 的物理閘門，用 `VRAM = Weights + KV + Activations` 與 `tokens/s ≈ BW / bytes_per_token` 判斷可行性。**永不進化**。 |
 | **RQGM Evaluator** | Fuzzy 的 domain 品味評審，用 XML deficit-scoring rubric 判「解法好不好」。**受控進化**。 |
 | **Deficit Scoring** | 反向評分：不是「加分列舉優點」，而是從滿分往下扣，逐條列 **Red Flag**（缺陷/掩蓋）。天然抗諂媚（sycophancy）。 |
@@ -170,6 +179,8 @@ flowchart LR
 - **驗收**：challenger evaluator 能在 held-out `val` anchor 上統計勝出（P1/P2）並安全升級；prefix-share 高的工作負載上 KV 節省 80%+（T4 為 SIMULATED）。
 
 > **實作現況（docs ↔ code reconciled）**：P0、P1 已落地，**P2 的統計化 gating 與 Pareto population 搜尋亦已實作**——`gepa_evolve` 維護 Pareto frontier（`sep::<criterion>` + `parsimony` + `adversarial` 多目標、**父代 Thompson 取樣**、在 `dev` 選擇split 選 best）、code gate 在 held-out `val` 跑 **P1 非劣 + P2 Bayesian Beta-Binomial 後驗/MDE**、strict/loose **hack-ratio** 接官方 `rqgm` 套件並自動收緊 tolerance、報告含 **over-acceptance / over-optimization gap / provenance**、selective erasure 改 **soft-delete + reconfirm**、**judge panel + accuracy/κ 校準**、**hybrid-search 記憶回撈** 皆已接上。frontier 節點的 **淺層 MCTS（UCT）** 與 **multi-agent debate**（Thompson-over-frontier 為預設）現為 **opt-in 已實作**：`gepa_evolve(strategy="mcts")` 與 `evaluate_panel(debate=True)`，且**晉升 gate 恆 deterministic + debate-free**（debate 於 offline mock 為可重現 no-op，真辯論需 live 模型；淺樹 MCTS 增益有限）。**仍為近似 / 需硬體**：offline judge 是 deterministic rubric-aware **mock**（真評分需 Lemonade/vLLM），prefix-caching 80%+ 節省與 MI300X 大 population 屬 **T4 SIMULATED**。
+
+> **Co-evolution 現況（agent 半，鐵律 II/IV）**：平台原先只進化 evaluator（裁判）；現已補上**另一半——task-agent（選手）也進化**，形成完整 co-evolution，全程 offline deterministic。落地於 [`backend/agent/`](../backend/agent/)：**agent-program 進化（EvoSkill）** `agent_evolve.py` 鏡射 `gepa_evolve`（program frontier，重用抽出的 `frontier_base.ParetoFrontier`）＋ **具體架構 DGM archive** `concrete_archive.py`；agent 由 `agent_score.py` **以當期凍結的 champion rubric（`judge.score_candidate`）評分**聚合 utility，晉升 gate 在 **held-out `val` needs** 上以凍結 evaluator 勝過 champion agent 才過（`data/agent_tasks/needs.json` 四路拆分，鏡射 anchors）；evaluator epoch 升級時觸發 **agent 效用 selective erasure**（`evolve.approve_challenger` hook）。**不對稱守恆**（有測試把關，見 [`tests/test_agent_coevolution.py`](../tests/test_agent_coevolution.py)）：epoch 內 evaluator 凍結，agent 覆蓋「凍結 champion 抓不到的盲點（如 kpi 遊戲）」得到 **零 utility 增益**，故無法在 epoch 內 game 裁判；且 agent 進化無權讀/改 evaluator rubric/gate。API：`POST /api/admin/agent/propose|promote`，`/api/admin/report` 含 `agent` 與 `co_evolution` 區塊。**仍為近似 / 需硬體**：offline 生成同樣是 program-aware **mock**（真生成需 Lemonade/vLLM，見 gfx1151 runbook）。
 
 ---
 

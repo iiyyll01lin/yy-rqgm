@@ -1,6 +1,6 @@
 # A3 — The RQGM Evaluator / 會進化的品味閘門
 
-> 模組定位：定義那個坐在物理閘門之後、**fuzzy 且受控進化**的評審。它是全平台唯一被允許進化的元件，因此也是最需要防呆的元件。
+> 模組定位：定義那個坐在物理閘門之後、**fuzzy 且受控進化**的評審。它是平台**兩個會進化的 fuzzy 半之一**（另一半是 task-agent，見 §7＋[`backend/agent/`](../backend/agent/)）；物理層永不進化。因為評審會進化，它也是最需要防呆的元件——關鍵不對稱：**agent 由凍結的 champion evaluator 評、evaluator 由 held-out anchor 評**（見 [`blueprint.md`](./blueprint.md) 鐵律 II/IV）。
 > 上游：[`01-orchestration.md`](./01-orchestration.md)（它在圖中的位置、epoch freeze）、[`02-sizing-math.md`](./02-sizing-math.md)（它的記憶吃多少 VRAM）。下游：[`04-stack-export.md`](./04-stack-export.md)（它跑在哪些開源元件上）。
 
 ---
@@ -365,33 +365,38 @@ def new_champion_reconfirms(rec):
 
 ---
 
-## 7. 為什麼 Evaluator 必須在進化 Harness 之外（防 Reward Hacking）
+## 7. Co-evolution 的不對稱：agent 也進化，但永遠不讓解法決定評審（防 Reward Hacking）
 
-這是整個進化設計的**安全鎖**，值得單獨講清楚。
+這是整個進化設計的**安全鎖**，值得單獨講清楚。**平台的兩個 fuzzy 半都會進化**：evaluator（裁判，本檔）＋ task-agent（選手，[`backend/agent/`](../backend/agent/)）。這一節說明兩者如何 **co-evolve 卻不互相 reward-hack**。
 
-**危險**：若讓「產生解法的 harness」與「評判解法的 evaluator」在**同一個迴圈內共同進化**，系統會迅速學會一件事——不是把問題解好，而是**生成專門討好當前 evaluator 的解法**（reward hacking）。更糟的是 evaluator 也可能退化去迎合 harness，兩者共謀出一個自我感覺良好、實則無能的閉環（Goodhart's Law 的極端形式）。
+**危險**：若讓「產生解法的 agent」與「評判解法的 evaluator」共用**同一個裁判**、又同時進化，系統會迅速學會一件事——不是把問題解好，而是**生成專門討好當前 evaluator 的解法**（reward hacking）；更糟的是 evaluator 也可能退化去迎合 agent，兩者共謀出一個自我感覺良好、實則無能的閉環（Goodhart's Law 的極端形式）。**唯一的解法不是「不進化 agent」，而是不對稱**：讓兩半各由**不同的裁判**把關。
 
-**AgentForge 的三道結構性防線**：
+**AgentForge 的不對稱防線（兩半 · 兩個裁判）**：
 
 ```mermaid
 flowchart TD
-    subgraph SOLVE["解法進化 (harness loop)"]
-        S1["Optimizer / candidate generator"] --> S2["population search"]
+    subgraph AGENT["AGENT 半 (backend/agent/) — 選手進化"]
+        A1["agent program frontier<br/>(EvoSkill: prompt + skills)"] --> A2["跑 held-out needs 產架構<br/>+ concrete-arch DGM archive"]
     end
-    subgraph JUDGE["評審進化 (evaluator loop, 分離)"]
+    subgraph JUDGE["EVALUATOR 半 (本檔) — 裁判進化, 分離"]
         J1["GEPA reflect on rubric"] --> J2["challenger rubric"]
     end
-    EXT[["外部 held-out labeled anchor (val)<br/>code gate + HITL veto"]]
-    S2 -->|"被評, 但不能改評審"| FROZEN["frozen evaluator (this epoch)"]
+    FROZEN["frozen champion evaluator<br/>(this epoch · judge.score_candidate)"]
+    EXT[["外部 held-out labeled ANCHOR (val)<br/>code gate + HITL veto"]]
+    A2 -->|"由凍結 champion 評分<br/>(不對稱: 非 anchor, 且無權改評審)"| FROZEN
+    FROZEN -->|"agent gate: val needs 勝過 champion agent → agent epoch++"| A1
     J2 -->|"必須統計勝過"| EXT
-    EXT -->|"gating"| FROZEN
+    EXT -->|"gating → evaluator epoch++"| FROZEN
+    A2 -.->|"gamed 架構 → 對抗池"| J1
+    EXT -.->|"evaluator epoch++ → agent 效用 selective erasure"| A1
 ```
 
-1. **兩個迴圈物理分離**：解法在 harness loop 進化；評審在**獨立的** evaluator loop 進化。harness 只能被 frozen evaluator 評，**無權修改評審**。
-2. **Epoch freeze**：在一個 epoch 內評審完全凍結，harness 無法透過「即時觀察評分變化」來反推並攻擊評審。
-3. **外部 code gate 是最終裁判**：evaluator 的升級**不由 proposer 內部指標決定**，而由一道 **code 統計門檻**判定——它只在 **held-out `val` anchor** 上評分（GEPA proposer 只驅動於 `train`、在 `dev` 上選 frontier，永遠碰不到 gate 的 `val` 與報告的 `test`，§6.1 四路 data isolation），HITL 再加一層否決權（§6.2）。系統無法 hack 一個它訓練 / 選擇時都碰不到的裁判。
+1. **兩個迴圈物理分離、兩個不同裁判**：agent 在 [`agent_evolve.py`](../backend/agent/agent_evolve.py) 進化（program frontier，重用抽出的 `frontier_base.ParetoFrontier`）；評審在**獨立的** evaluator loop 進化。**agent 由當期凍結的 champion evaluator 評（[`agent_score.py`](../backend/agent/agent_score.py) → `judge.score_candidate` on champion rubric），evaluator 由 held-out anchor 評**——兩者的裁判不同，故 agent 討好裁判 ≠ 讓自己當裁判。agent 演化路徑**無權讀/改** evaluator 的 rubric 或 gate。
+2. **Epoch freeze**：在一個 evaluator epoch 內評審完全凍結，agent 無法透過「即時觀察評分變化」來反推並攻擊評審。可驗證的推論：**agent 覆蓋一個「凍結 champion 抓不到的盲點」（如 `kpi_sensor_gaming`，champion-0 無 `reward_hacking_resistance` criterion）得到的 utility 增益為零**——因為凍結 champion 的 loose 讀根本不扣那條。故 epoch 內 agent 只能靠**真的**覆蓋評審會扣分的失敗模式來得分（[`tests/test_agent_coevolution.py::test_epoch_internal_anti_hack_asymmetry`](../tests/test_agent_coevolution.py) 把關）。
+3. **外部 code gate 是 evaluator 的最終裁判**：evaluator 的升級**不由 proposer 內部指標決定**，而由 **held-out `val` anchor** 上的 code 統計門檻判定（§6.1 四路 data isolation）＋ HITL 否決（§6.2）。agent 的 needs 資料（[`data/agent_tasks/needs.json`](../data/agent_tasks/needs.json)）同樣四路隔離：agent gate 只在 held-out `val` needs 上判。
+4. **對抗式 self-play + epoch 邊界耦合**：agent 為了在凍結 champion 下拉高 utility，會在 kpi/drift needs 上產出**gamed 架構**（loose 看起來強、卻藏著 champion 抓不到的 poison pill）——這些正是 [`concrete_archive.py`](../backend/agent/concrete_archive.py) 挖出、回灌 evaluator 對抗池的樣本，驅動 evaluator 去補盲點。反過來，**evaluator epoch 升級時觸發 agent 效用 selective erasure**（[`evolve.approve_challenger`](../backend/evaluator/evolve.py) hook 呼叫 [`agent_evolve.selective_erasure_agent`](../backend/agent/agent_evolve.py)）：用新 champion 重評整個 agent archive，只 game 了舊盲點的 program 在此掉效用，逼其真正進化。
 
-再加上 GEPA 的 Pareto frontier 維持 rubric 多樣性（§5），避免 evaluator 退化成只會抓單一種錯的偏執狂。**一句話**：讓解法進化、讓評審進化，但**永遠不讓解法決定評審**，且**評審的升級權握在系統之外的人手上**。
+再加上 GEPA 的 Pareto frontier 維持 rubric / program 多樣性（§5），避免任一半退化成偏執狂。**一句話**：讓**選手也進化、讓評審也進化**，但**永遠不讓選手決定評審**（agent 的裁判是凍結的 evaluator，evaluator 的裁判是 held-out anchor），且**評審的升級權握在系統之外的人手上**。
 
 ---
 
@@ -478,7 +483,7 @@ flowchart LR
 - **四路 Data isolation**：73 個 labeled anchor（2 domain pack：smart_manufacturing + grid_energy）拆 `train`(28)/`dev`(12)/`val`(19)/`test`(14)——GEPA 只讀 train、frontier 選在 dev、gate 只看 val、test 供報告。
 - **Judge panel + self-consistency**（多 persona/溫度、median + 多數決、criterion 順序隨機化）；校準指標改用 **accuracy / Cohen's κ**（gate 仍用 separation 統計下界）。
 - 升級後 **selective erasure = soft-delete + reconfirm**：`heuristic_failure` 由新 champion 重驗、軟刪不再確認者、延後硬 purge；`physics_truth` 永久保留（由 gatekeeper 灌入）。
-- Evaluator **恆在進化 harness 之外** + epoch freeze + **外部 labeled anchor 的 code gate**，從結構上封死 reward hacking。
+- **Co-evolution 不對稱**（§7）：agent 半（[`backend/agent/`](../backend/agent/)）也進化，但**由凍結的 champion evaluator 評分**（`agent_score` → `judge.score_candidate`）、其 gate 在 held-out `val` **needs** 上判；evaluator 仍**由 held-out anchor 評**。兩半各由不同裁判把關 + epoch freeze + agent 產 gamed 樣本回灌對抗池 + evaluator epoch 邊界對 agent 效用 **selective erasure**，從結構上封死 reward hacking（epoch 內 agent 覆蓋 champion 盲點得零增益，有測試把關）。
 - **Self-healing Qdrant memory**：`memory_type` × `created_at_epoch` 治理 + hybrid search（**已接上 judge**，embedding 為 offline hashing BoW 近似）+ soft-delete/purge。
 - **offline 誠實邊界**：judge 為 deterministic rubric-aware **mock**（`mock_scoring.py`），真 live 評分需本地模型（Lemonade/vLLM）；frontier 父代選擇預設 **Thompson 取樣**，**淺層 MCTS（UCT）** 與 **high-disagreement multi-agent debate** 為 **opt-in 已實作**（`gepa_evolve(strategy="mcts")`、`evaluate_panel(debate=True)`）——**晉升 gate 恆保持 deterministic + debate-free**；debate 於 offline mock 為可重現 no-op（真辯論需 live 模型）。對淺樹 MCTS 的控制增益有限（如本節所述）。
 

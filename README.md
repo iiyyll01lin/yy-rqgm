@@ -39,17 +39,22 @@ AgentForge 的可信度地基是**把「物理」和「判斷」實體分離**�
 
 - **🧪 RQGM Evaluator（fuzzy，會進化）** — `backend/evaluator/`
   XML deficit-scoring rubric（三大 failure mode ＋ poison-pill ＋ forced CoT）判斷 *domain 適配度*。
-  它是唯一會進化的部分，但被關在進化 harness 之外、且**凍結於一個 epoch 內**。
+  它**凍結於一個 epoch 內**，升級由 **held-out anchor** 上的 code gate 把關。
 
-- **🔥 Hot path（同步、即時）**：4-step wizard → Gatekeeper → 凍結的 champion evaluator → 匯出 PoC。
-- **❄ Cold path（非同步、離線）**：HITL 回饋 + traces → **GEPA Pareto-frontier population search**
+- **🤖 Task-Agent（fuzzy，會進化）** — `backend/agent/`
+  平台的**另一個**會進化的 fuzzy 半：task-agent 的「基因」= system prompt + skills（EvoSkill）＋每個 need 的具體架構 DGM archive。
+  它**由當期凍結的 champion evaluator 評分**（`judge.score_candidate`）、gate 在 held-out `val` **needs** 上判——**不對稱**：agent 的裁判是 evaluator，evaluator 的裁判是 anchor。物理層永不進化。
+
+- **🔥 Hot path（同步、即時）**：4-step wizard → Gatekeeper → 凍結的 champion evaluator → 匯出 PoC；task-agent node 採用當期 **champion agent program**（fallback seed）。
+- **❄ Cold path（非同步、離線）· evaluator 半**：HITL 回饋 + traces → **GEPA Pareto-frontier population search**
   （`per-criterion` + `parsimony` + `adversarial` 多目標、top-K 非 dominated、**父代以 Thompson 取樣**，落地 `data/frontier/`）＋ **self-play 紅隊** →
   frontier best（**`dev` 選擇split 的 BBε 下界**）→ **兩段式晉升**：**CODE gate 先行**（held-out `val` 上 P1 非劣 +
   **P2 Bayesian Beta-Binomial 後驗 `P(Δsep>0) ≥ 0.95` 且效果 `Δsep ≥ MDE`**，平手偏袒現任；strict/loose **hack-ratio** 接官方 `rqgm` 套件，exploitation 時自動收緊 tolerance）→ **HITL 只能否決**（不能覆寫失敗 gate）→
   `epoch++` 晉升 champion → **selective erasure**（soft-delete + 新 champion reconfirm；`physics_truth` 永久保留）。
   judge 判斷前用 **hybrid-search** 從 Qdrant 回撈記憶注入 prompt。
+- **❄ Cold path · agent 半**：跑 champion agent 的 GEPA program frontier（重用抽出的 `frontier_base.ParetoFrontier`）＋具體架構 DGM archive → agent gate（held-out `val` needs、**凍結 champion 評分**）→ `agent_epoch++`。**耦合**：agent 產出的 gamed 架構回灌 evaluator 對抗池；**evaluator epoch 升級時觸發 agent 效用 selective erasure**（用新 champion 重評 archive）。
 
-這就是 **RQGM 的 epoch 結構 ＋ GEPA 的變異引擎 ＋ code 統計 gate ＋ HITL 否決**——用「held-out anchor 上的統計門檻（frontier 選在 `dev`、gate 只看 `val`、`test` 純報告，人只能否決、碰不到 val/test）」當防 reward-hacking 的鐵閘。
+這就是 **RQGM 的 epoch 結構 ＋ GEPA 的變異引擎 ＋ code 統計 gate ＋ HITL 否決**——用「held-out anchor 上的統計門檻（frontier 選在 `dev`、gate 只看 `val`、`test` 純報告，人只能否決、碰不到 val/test）」當防 reward-hacking 的鐵閘。**選手與裁判都進化，但各由不同裁判把關**：agent 由凍結的 champion evaluator 評、evaluator 由 held-out anchor 評（見 [`docs/03-evaluator.md`](docs/03-evaluator.md) §7）。
 
 ### 架構圖 (Architecture)
 
@@ -69,14 +74,25 @@ flowchart TD
     EpochGate -. selective erasure<br/>soft-delete + reconfirm .-> Mem[(Qdrant memory<br/>heuristic_failure vs physics_truth<br/>+ epoch tag)]
     Mem -. hybrid search 回撈 .-> Judge
 
-    subgraph HARD[deterministic · 物理地基]
+    %% ---- Agent half: co-evolves UNDER the frozen champion evaluator ----
+    Judge -. frozen rubric = agent 的裁判<br/>(不對稱, 非 anchor) .-> ALoop[🤖 Agent GEPA program frontier<br/>+ concrete-arch DGM archive]
+    ALoop -. challenger · held-out val needs .-> AGate{AGENT gate<br/>frozen evaluator 評分<br/>勝過 champion agent}
+    AGate -. pass → agent_epoch++ .-> Champ([Champion agent program])
+    Champ -. hot path 採用 .-> Wizard
+    ALoop -. gamed 架構 → 對抗池 .-> Loop
+    EpochGate -. evaluator epoch++ → agent 效用 erasure .-> ALoop
+
+    subgraph HARD[deterministic · 物理地基 · 永不進化]
       Gate
     end
-    subgraph SOFT[fuzzy · 會進化 · code-gated + HITL veto]
+    subgraph SOFT[fuzzy · 兩半 co-evolve · 各由不同裁判把關]
       Judge
       Loop
       CodeGate
       EpochGate
+      ALoop
+      AGate
+      Champ
     end
 ```
 
@@ -93,7 +109,7 @@ flowchart TD
 | 推論 (Inference) | **vLLM on ROCm** (`rocm/vllm-dev`, `--enable-prefix-caching`, `VLLM_ROCM_USE_AITER=1`) · **Lemonade** (Ryzen AI NPU / Radeon, OpenAI-compatible) | 本地服務 LLM；無 server 時降級為 **deterministic rubric-aware MOCK**（`inference/mock_scoring.py`） |
 | 量化 (Quantization) | **AMD Quark** (int4 / fp8) | 壓小權重以塞進顯存 |
 | 編排 (Orchestration) | **LangGraph** (StateGraph + `SqliteSaver` checkpointer + HITL `interrupt()`) | Task→Gatekeeper→Evaluator→HITL |
-| 進化 (Evolution) | **RQGM** (`rqgm` PyPI: `EpochManager`/`EpochConfig`/`TransitionReason`) ＋ GEPA-style **Pareto frontier**（本 repo 實作） | epoch 晉升 code gate、strict/loose hack-ratio、tolerance 收緊 |
+| 進化 (Evolution) | **RQGM** (`rqgm` PyPI: `EpochManager`/`EpochConfig`/`TransitionReason`) ＋ GEPA-style **Pareto frontier**（本 repo 實作，evaluator + agent 兩半共用 `frontier_base`） | 兩半 co-evolution：evaluator epoch 晉升 code gate（held-out anchor）、agent epoch 晉升 gate（held-out needs · 凍結 champion 評分）、strict/loose hack-ratio、tolerance 收緊、boundary agent 效用 erasure |
 | 記憶 (Memory) | **Qdrant**（無 server 時自動降級為 in-memory；embedding 預設 offline hashing BoW，`AGENTFORGE_EMBEDDER` 可切換真本地 embedder：`sentence-transformers` CPU 或服務端 `/v1/embeddings`，不可用時自動回退 hashing） | 演化記憶 + hybrid search 回撈 + selective erasure |
 | 代理模擬 (Surrogate) | **PyTorch on ROCm** 物理 surrogate（`backend/evaluator/surrogate.py`：offline deterministic 近似 + `AGENTFORGE_SURROGATE=torch` 選配 ROCm 路徑） | 驗 numerical-duct-tape：動作後 root-cause 變數是否仍在界外；取代 Omniverse 等閉源模擬器 |
 | 前端 (Frontend) | **Next.js 16 + React 19 + Tailwind v4** | 4-step wizard、VRAM 可視化 |
@@ -224,18 +240,19 @@ yy-rqgm/
 │   └── DEMO.md                #   智慧製造端到端走查
 ├── backend/                   # FastAPI 服務（package `backend.*`）
 │   ├── gatekeeper/            #   🛡 deterministic 物理（vram/bandwidth/tiers.json）+ physics_memory 灌入
-│   ├── evaluator/             #   🧪 judge + GEPA evolve/frontier + gate + rqgm_adapter + adversarial + panel + report + versioning
+│   ├── evaluator/             #   🧪 judge + GEPA evolve/frontier(+frontier_base) + gate + rqgm_adapter + adversarial + panel + report + versioning
+│   ├── agent/                 #   🤖 co-evolving task-agent: program(EvoSkill) + versioning + score(frozen evaluator) + evolve/frontier + concrete DGM archive + coevolve
 │   ├── graph/                 #   LangGraph 編排（nodes/ + orchestrator + router）
-│   ├── inference/             #   Lemonade client + deterministic rubric-aware mock_scoring
+│   ├── inference/             #   Lemonade client + deterministic rubric-aware / program-aware mock_scoring
 │   ├── memory/                #   Qdrant store（in-memory fallback + hybrid search）
 │   ├── export/                #   TCO 提案 + 可跑 deploy 模板
 │   ├── domains/               #   domain pack plugin（smart_manufacturing/ + grid_energy/）
-│   └── app/                   #   main.py + REST API
+│   └── app/                   #   main.py + REST API（含 admin agent/propose+promote）
 ├── frontend/                  # Next.js 16 4-step wizard（lib/api.ts, lib/vram.ts, …）
 ├── infra/                     # docker-compose.yml + docker-compose.rocm.yml
 ├── scripts/                   # dev.sh（起服務）、demo.sh（走查）、quantize_quark.py
-├── data/                      # anchor/（73 labeled, 2 domains: train/dev/val/test）、frontier/、epoch_state.json、rqgm_state.json
-└── tests/                     # 147 tests（145 passed + 2 @live skipped；gatekeeper 物理數學 + RQGM gate/frontier/erasure 必測）
+├── data/                      # anchor/（labeled, 2 domains: train/dev/val/test）、agent_tasks/needs.json（agent 半 held-out needs, 四路拆分）、frontier/、epoch_state.json、rqgm_state.json、agent_state.json*（*gitignored runtime）
+└── tests/                     # 169 tests（166 passed + 3 @live skipped；gatekeeper 物理數學 + RQGM gate/frontier/erasure + agent co-evolution/anti-hack 必測）
 ```
 
 ---
