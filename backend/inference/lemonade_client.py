@@ -231,6 +231,37 @@ class LemonadeClient:
             self._live = False
             return _mock_chat(msgs, use_model)
 
+    # -- embeddings --------------------------------------------------------
+    def embeddings(self, texts: list[str], model: str | None = None) -> list[list[float]] | None:
+        """Best-effort vectors from an OpenAI-compatible ``/v1/embeddings`` endpoint.
+
+        Returns one vector per input, or ``None`` when embeddings are unavailable
+        (forced mock, no reachable server, or a non-conforming response). There is
+        NO deterministic mock for embeddings — callers (``LemonadeEmbedder``) treat
+        ``None`` as "fall back to the offline hashing embedder", so the default
+        offline path never hits the network here.
+        """
+        if self.force_mock or not texts:
+            return None
+        if not self.is_live():
+            return None
+        payload: dict[str, Any] = {"model": model or self.model, "input": list(texts)}
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/embeddings",
+                json=payload,
+                headers=self._headers(),
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            rows = sorted(data.get("data", []), key=lambda d: d.get("index", 0))
+            vecs = [[float(x) for x in row["embedding"]] for row in rows]
+            return vecs or None
+        except Exception:
+            self._live = False
+            return None
+
 
 # ---------------------------------------------------------------------------
 # Deterministic mock

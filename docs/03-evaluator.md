@@ -443,7 +443,7 @@ def search(self, query, top_k, memory_type, active_only=True, max_epoch=None):
 
 - **Semantic**：dense embedding 找「語意上相似的過往失敗」——即使用詞不同也能召回。judge 撈 `heuristic_failure`（≤ 當前 epoch）＋ 永久 `physics_truth`。
 - **Active filters**：硬性條件過濾（型別對、`active=True` 未被軟刪、epoch 合法）。兩者結合，既有召回廣度，又有稽核精度。
-- **offline 誠實邊界**：`embed()` 是一個 **deterministic hashing bag-of-words**（numpy，無 torch / sentence-transformers），只給 PoC 級的字面語意相似度；換上真 embedder 不需改 store API。無 Qdrant server 時自動降級為 in-memory local mode。
+- **offline 誠實邊界**：`embed()` **預設**是一個 **deterministic hashing bag-of-words**（numpy，無 torch / sentence-transformers），只給 PoC 級的字面語意相似度，讓 CI 全離線可重現。真 embedder 的 seam **已接上**（[`get_embedder()`](../backend/memory/qdrant_store.py)）：`AGENTFORGE_EMBEDDER=sentence-transformers`（CPU 選配 dep）或 `=lemonade`（服務端 `/v1/embeddings`）在**可用時**才啟用，任何不可用（未安裝 / 無 server / mock）都自動回退 hashing——store API 不變。無 Qdrant server 時自動降級為 in-memory local mode。
 
 ### 8.3 Soft-Delete / Purge on Epoch Transition
 

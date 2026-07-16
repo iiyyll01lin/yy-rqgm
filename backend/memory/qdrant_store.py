@@ -16,9 +16,14 @@ Connection strategy (graceful degradation):
     * Otherwise -> Qdrant *local mode* (:memory:), an embedded pure-python store
       with the same filtering semantics. So the platform runs with no server.
 
-Embeddings are a lightweight, deterministic hashing bag-of-words (numpy only) —
-no torch / sentence-transformers, so it works fully offline. Swap in a real
-embedder later without changing the store API.
+Embeddings are pluggable (see :func:`get_embedder`). The DEFAULT is a lightweight,
+deterministic hashing bag-of-words (numpy only) — no torch / sentence-transformers,
+so CI stays fully offline and reproducible. The ``AGENTFORGE_EMBEDDER`` env toggle
+opts in to a REAL local semantic embedder — ``sentence-transformers`` on CPU
+(``AGENTFORGE_EMBEDDER=sentence-transformers``) or a served model's OpenAI-compatible
+``/v1/embeddings`` endpoint (``=lemonade``) — WHEN it is installed / reachable, with
+automatic fallback to the deterministic hashing embed otherwise. The store API is
+embedder-agnostic: only :func:`get_embedder` changes.
 """
 
 from __future__ import annotations
@@ -38,6 +43,17 @@ from qdrant_client import models as qm
 EMBED_DIM = 256
 DEFAULT_COLLECTION = "agentforge_memory"
 _CONNECT_TIMEOUT_S = 1.5
+
+# Embedder selection (offline-safe): the default is the deterministic hashing
+# bag-of-words; the env toggle opts in to a real local embedder WHEN available.
+ENV_EMBEDDER = "AGENTFORGE_EMBEDDER"          # hashing (default) | sentence-transformers | lemonade
+ENV_EMBED_MODEL = "AGENTFORGE_EMBED_MODEL"    # embedder-specific model id (optional)
+_HASHING = "hashing"
+_SENTENCE_TRANSFORMERS = "sentence-transformers"
+_LEMONADE = "lemonade"
+# CPU-friendly, widely-cached small model; only downloaded if a user opts in.
+_DEFAULT_ST_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+_EMBED_TIMEOUT_S = 30.0
 
 
 class MemoryType(str, Enum):
@@ -70,16 +86,15 @@ def embed(text: str, dim: int = EMBED_DIM) -> list[float]:
     """Deterministic hashing bag-of-words embedding, L2-normalized.
 
     Not a transformer — a cheap, offline, dependency-light stand-in that still
-    gives useful lexical-semantic similarity for the PoC.
+    gives useful lexical-semantic similarity for the PoC. It stays the DEFAULT
+    (and the fallback) so the test suite is offline/deterministic; it also powers
+    :mod:`backend.graph.router`'s keyword+embedding cosine.
 
-    SEAM (live recall) — TODO: for a live deployment, swap this hashing BoW for a
-    real semantic embedder (e.g. a sentence-transformer, or the served model's
-    ``/v1/embeddings`` endpoint via :class:`LemonadeClient`) behind an env toggle
-    (e.g. ``AGENTFORGE_EMBEDDER``). Keep this deterministic hashing embed as the
-    offline default so the test suite stays offline/deterministic. The store API
-    (:meth:`EvolutionaryMemory.add` / :meth:`~EvolutionaryMemory.search`) does not
-    change — only this function is replaced. NOT built now (needs a live model /
-    GPU to be worth it; hashing BoW is adequate for the offline PoC).
+    The live-recall SEAM is now implemented (see :func:`get_embedder`): set
+    ``AGENTFORGE_EMBEDDER=sentence-transformers`` (or ``=lemonade``) to swap in a
+    real semantic embedder WHEN it is installed/reachable, with automatic fallback
+    to this hashing embed. The store API is unchanged — only the embedder object
+    differs.
     """
     vec = np.zeros(dim, dtype=np.float32)
     tokens = [t for t in _tokenize(text)]
@@ -101,6 +116,100 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in "".join(c.lower() if c.isalnum() else " " for c in text).split() if t]
 
 
+# ---------------------------------------------------------------------------
+# Pluggable embedders (default = deterministic hashing; real ones are opt-in)
+# ---------------------------------------------------------------------------
+class HashingEmbedder:
+    """Deterministic hashing bag-of-words embedder (the offline default).
+
+    Thin object wrapper over :func:`embed` so the store can be embedder-agnostic
+    while the default path stays byte-identical to the previous behaviour.
+    """
+
+    def __init__(self, dim: int = EMBED_DIM) -> None:
+        self.dim = int(dim)
+        self.name = f"hashing-bow[{self.dim}]"
+
+    def embed(self, text: str) -> list[float]:
+        return embed(text, self.dim)
+
+
+class SentenceTransformerEmbedder:
+    """Real local semantic embedder via ``sentence-transformers`` (CPU, offline).
+
+    OPTIONAL dependency — install with ``uv pip install sentence-transformers``
+    (not in the default lock, so CI never pulls torch/transformers). Construction
+    raises if the package or model is unavailable so :func:`get_embedder` can fall
+    back to the deterministic hashing embed.
+    """
+
+    def __init__(self, model_name: str | None = None) -> None:
+        from sentence_transformers import SentenceTransformer  # optional import
+
+        self.model_name = model_name or os.getenv(ENV_EMBED_MODEL, _DEFAULT_ST_MODEL)
+        self._model = SentenceTransformer(self.model_name, device="cpu")
+        self.dim = int(self._model.get_sentence_embedding_dimension())
+        self.name = f"sentence-transformers:{self.model_name}"
+
+    def embed(self, text: str) -> list[float]:
+        vec = self._model.encode(
+            [text], normalize_embeddings=True, convert_to_numpy=True, show_progress_bar=False
+        )[0]
+        return np.asarray(vec, dtype=np.float32).tolist()
+
+
+class LemonadeEmbedder:
+    """Real embedder via a served model's OpenAI-compatible ``/v1/embeddings``.
+
+    Uses the local ROCm inference server (Lemonade / vLLM-ROCm) — the truly
+    "local semantic recall" path the docs promise. Construction probes the
+    endpoint once and raises on any failure (no server, mock, unreachable) so
+    :func:`get_embedder` falls back to the deterministic hashing embed. Never
+    used by the default offline test suite (which forces the mock).
+    """
+
+    def __init__(self, model_name: str | None = None) -> None:
+        from backend.inference.lemonade_client import get_lemonade_client
+
+        self._client = get_lemonade_client()
+        self.model_name = model_name or os.getenv(ENV_EMBED_MODEL) or None
+        probe = self._client.embeddings(["probe"], model=self.model_name)
+        if not probe or not probe[0]:
+            raise RuntimeError("live /v1/embeddings unavailable (mock/offline/unreachable)")
+        self.dim = len(probe[0])
+        self.name = f"lemonade:{self.model_name or self._client.model}"
+
+    def embed(self, text: str) -> list[float]:
+        out = self._client.embeddings([text], model=self.model_name)
+        if not out or not out[0]:
+            # Defensive: degrade to a deterministic hashing vector of the same dim
+            # rather than raising mid-request (keeps the pipeline alive).
+            return embed(text, self.dim)
+        return [float(x) for x in out[0]]
+
+
+def get_embedder(dim: int = EMBED_DIM):
+    """Return the active embedder, honouring ``AGENTFORGE_EMBEDDER`` (offline-safe).
+
+    Default (unset / ``hashing``) → deterministic :class:`HashingEmbedder`. Opting
+    in to a real embedder (``sentence-transformers`` / ``lemonade``) falls back to
+    the hashing embedder on ANY unavailability, so the default test suite (which
+    never sets the env, and forces the inference mock) stays offline + deterministic.
+    """
+    backend = os.getenv(ENV_EMBEDDER, _HASHING).strip().lower()
+    if backend in ("", _HASHING, "bow", "hashing-bow"):
+        return HashingEmbedder(dim)
+    try:
+        if backend in (_SENTENCE_TRANSFORMERS, "st", "sbert"):
+            return SentenceTransformerEmbedder()
+        if backend in (_LEMONADE, "vllm", "server"):
+            return LemonadeEmbedder()
+    except Exception:
+        # Availability gate: unknown/uninstalled/unreachable → deterministic fallback.
+        return HashingEmbedder(dim)
+    return HashingEmbedder(dim)
+
+
 class EvolutionaryMemory:
     """Hybrid (semantic + payload-filter) memory with soft-delete + purge."""
 
@@ -109,12 +218,20 @@ class EvolutionaryMemory:
         url: str | None = None,
         collection: str = DEFAULT_COLLECTION,
         dim: int = EMBED_DIM,
+        embedder: Any = None,
     ):
+        # The embedder owns the vector space; the collection is sized to its dim so
+        # a real (e.g. 384-d sentence-transformers) embedder just works. Default =
+        # deterministic hashing (offline). ``embedder`` can be injected (tests).
+        self._embedder = embedder if embedder is not None else get_embedder(dim=dim)
         self.collection = collection
-        self.dim = dim
+        self.dim = int(getattr(self._embedder, "dim", dim))
         self.mode = "local"
         self.client = self._connect(url)
         self._ensure_collection()
+
+    def _embed(self, text: str) -> list[float]:
+        return self._embedder.embed(text)
 
     def _connect(self, url: str | None) -> QdrantClient:
         url = url or os.getenv("QDRANT_URL")
@@ -163,7 +280,7 @@ class EvolutionaryMemory:
             payload.update(extra)
         self.client.upsert(
             collection_name=self.collection,
-            points=[qm.PointStruct(id=point_id, vector=embed(text, self.dim), payload=payload)],
+            points=[qm.PointStruct(id=point_id, vector=self._embed(text), payload=payload)],
         )
         return point_id
 
@@ -190,7 +307,7 @@ class EvolutionaryMemory:
 
         result = self.client.query_points(
             collection_name=self.collection,
-            query=embed(query, self.dim),
+            query=self._embed(query),
             query_filter=query_filter,
             limit=top_k,
             with_payload=True,
@@ -327,6 +444,8 @@ class EvolutionaryMemory:
         return {
             "mode": self.mode,
             "collection": self.collection,
+            "embedder": getattr(self._embedder, "name", "unknown"),
+            "embedding_dim": self.dim,
             "total": self.count(),
             "heuristic_failure": self.count_by_type(MemoryType.HEURISTIC_FAILURE),
             "physics_truth": self.count_by_type(MemoryType.PHYSICS_TRUTH),

@@ -94,7 +94,7 @@ flowchart TD
 | 量化 (Quantization) | **AMD Quark** (int4 / fp8) | 壓小權重以塞進顯存 |
 | 編排 (Orchestration) | **LangGraph** (StateGraph + `SqliteSaver` checkpointer + HITL `interrupt()`) | Task→Gatekeeper→Evaluator→HITL |
 | 進化 (Evolution) | **RQGM** (`rqgm` PyPI: `EpochManager`/`EpochConfig`/`TransitionReason`) ＋ GEPA-style **Pareto frontier**（本 repo 實作） | epoch 晉升 code gate、strict/loose hack-ratio、tolerance 收緊 |
-| 記憶 (Memory) | **Qdrant**（無 server 時自動降級為 in-memory；embedding 為 offline hashing BoW） | 演化記憶 + hybrid search 回撈 + selective erasure |
+| 記憶 (Memory) | **Qdrant**（無 server 時自動降級為 in-memory；embedding 預設 offline hashing BoW，`AGENTFORGE_EMBEDDER` 可切換真本地 embedder：`sentence-transformers` CPU 或服務端 `/v1/embeddings`，不可用時自動回退 hashing） | 演化記憶 + hybrid search 回撈 + selective erasure |
 | 代理模擬 (Surrogate) | **PyTorch on ROCm** 物理 surrogate | 取代 Omniverse 等閉源模擬器 |
 | 前端 (Frontend) | **Next.js 16 + React 19 + Tailwind v4** | 4-step wizard、VRAM 可視化 |
 
