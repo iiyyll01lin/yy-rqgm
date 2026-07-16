@@ -28,6 +28,7 @@ class GraphState(TypedDict, total=False):
     # --- task agent -------------------------------------------------------
     architecture: str
     proposal: dict[str, Any]
+    agent_program_version: str
 
     # --- gatekeeper (DETERMINISTIC hard gate) -----------------------------
     feasible: bool

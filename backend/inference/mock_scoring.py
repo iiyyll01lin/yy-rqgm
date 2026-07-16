@@ -94,6 +94,52 @@ STRENGTH_CATALOG: dict[str, float] = {
     "der_ensemble_forecast": 0.10,
 }
 
+# ---------------------------------------------------------------------------
+# AGENT half (RQGM co-evolution): program-aware deterministic generation
+# ---------------------------------------------------------------------------
+# skill -> (flaw it COVERS, strength it plants).  This is the offline analogue of
+# a genuinely-better agent PROGRAM producing a genuinely-better architecture: when
+# the champion program carries ``skill`` and the need has ``flaw`` latent, the
+# generated architecture no longer exhibits ``flaw`` (and gains ``strength``), so
+# the FROZEN champion evaluator (judge.score_candidate) scores it measurably
+# higher — the real offline signal that lets agent-evolution be more than noise.
+#
+# HONESTY / ANTI-HACK controls baked into the map:
+#   * a skill only helps on a need whose ``latent_flaws`` actually contains the
+#     flaw it covers (an IRRELEVANT skill — e.g. ``surrogate_validation`` here,
+#     which covers nothing — is a NO-OP and cannot win the agent gate);
+#   * ``reward_hacking_guard`` / ``drift_monitoring`` cover HEADROOM flaws that a
+#     champion-0 evaluator does NOT catch (kpi_sensor_gaming / concept_drift_blind),
+#     so covering them yields ZERO loose-deficit change (zero utility gain) UNTIL
+#     the evaluator itself evolves to catch them — the co-evolution coupling.
+AGENT_SKILL_COVERAGE: dict[str, tuple[str, str | None]] = {
+    "typed_state_schema":      ("no_state_schema", "typed_state"),
+    "physical_root_cause":     ("numerical_ducttape", "root_cause_model"),
+    "sensor_cross_validation": ("single_sensor_trust", "cross_validation"),
+    "noise_robust_fusion":     ("noise_capture", "cross_validation"),
+    "safety_envelope_gate":    ("unsafe_autonomy", "safety_envelope"),
+    "hitl_escalation":         ("no_hitl_escalation", "hitl_review"),
+    "drift_monitoring":        ("concept_drift_blind", "drift_monitor"),
+    "reward_hacking_guard":    ("kpi_sensor_gaming", None),
+    # A deliberately no-op skill (covers nothing): adding it must NOT win the gate.
+    "surrogate_validation":    ("__none__", "surrogate_validation"),
+}
+
+# Inverse map: evaluator criterion id -> the agent skill that addresses the failure
+# mode that criterion scores. Used by the offline agent-mutation mock so the agent
+# reflects on the FROZEN evaluator's red_flags (a textual gradient) and adds the
+# skill that closes the flagged gap — mirroring the evaluator's own GEPA mutator.
+CRITERION_TO_AGENT_SKILL: dict[str, str] = {
+    "physics_common_sense": "physical_root_cause",
+    "diagnostic_resilience": "sensor_cross_validation",
+    "noise_resilience": "noise_robust_fusion",
+    "modularity_drift": "typed_state_schema",
+    "safety_autonomy": "hitl_escalation",
+    "actuation_safety": "safety_envelope_gate",
+    "reward_hacking_resistance": "reward_hacking_guard",
+    "drift_monitoring": "drift_monitoring",
+}
+
 BASE_DEFICIT = 0.12
 DEFICIT_FLOOR = 0.02
 DEFICIT_CAP = 1.0
@@ -158,6 +204,10 @@ _KEYWORD_STRENGTHS: list[tuple[str, str]] = [
 
 _FLAW_SENTINEL_RE = re.compile(r"\[\[flaws:([^\]]*)\]\]", re.IGNORECASE)
 _STRENGTH_SENTINEL_RE = re.compile(r"\[\[strengths:([^\]]*)\]\]", re.IGNORECASE)
+# Agent-half sentinels (read from a task-agent GENERATION prompt; a live model
+# ignores them). See backend/agent/agent_program.py + backend/agent/agent_generate.py.
+_AGENT_SKILLS_SENTINEL_RE = re.compile(r"\[\[agent_skills:([^\]]*)\]\]", re.IGNORECASE)
+_NEED_FLAWS_SENTINEL_RE = re.compile(r"\[\[need_flaws:([^\]]*)\]\]", re.IGNORECASE)
 _CRITERION_ID_RE = re.compile(r'<criterion\b[^>]*?\bid="([^"]+)"')
 _SCORING_MODE_RE = re.compile(r"SCORING_MODE:\s*(strict|loose)", re.IGNORECASE)
 _PANEL_PERSONA_RE = re.compile(r"PANEL_PERSONA:\s*(.+)")
@@ -347,3 +397,106 @@ def _clamp(x: float) -> float:
 def _stable_unit_float(seed: str) -> float:
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
     return int(digest[:8], 16) / 0xFFFFFFFF
+
+
+# ---------------------------------------------------------------------------
+# AGENT half: program-aware deterministic architecture generation
+# ---------------------------------------------------------------------------
+def _sentinel_list(m: "re.Match | None") -> list[str]:
+    if m is None:
+        return []
+    return [t.strip() for t in m.group(1).split(",") if t.strip()]
+
+
+def parse_agent_skills(prompt: str) -> list[str]:
+    """Skills declared in a task-agent generation prompt (``[[agent_skills:...]]``)."""
+    return _sentinel_list(_AGENT_SKILLS_SENTINEL_RE.search(prompt))
+
+
+def parse_need_flaws(prompt: str) -> list[str]:
+    """Latent flaws of the need (``[[need_flaws:...]]``)."""
+    return _sentinel_list(_NEED_FLAWS_SENTINEL_RE.search(prompt))
+
+
+def agent_architecture_flaws_strengths(
+    skills: list[str], need_flaws: list[str]
+) -> tuple[list[str], list[str]]:
+    """Deterministically resolve a program's architecture on a need.
+
+    Returns ``(residual_flaws, planted_strengths)``:
+
+    * a latent flaw survives UNLESS a program skill covers it;
+    * a strength is planted only when a skill covers a flaw the need actually has
+      (so an irrelevant/no-op skill changes nothing — the honesty control).
+
+    A BETTER program (covers more of the need's latent flaws) therefore yields an
+    architecture with fewer residual flaws + more strengths, which the frozen
+    champion evaluator scores with a lower deficit (higher agent utility).
+    """
+    skill_set = set(skills)
+    covered: set[str] = set()
+    strengths: list[str] = []
+    for skill in skills:
+        cov = AGENT_SKILL_COVERAGE.get(skill)
+        if cov is None:
+            continue
+        flaw, strength = cov
+        if flaw in need_flaws:
+            covered.add(flaw)
+            if strength and strength not in strengths:
+                strengths.append(strength)
+    residual = [f for f in need_flaws if f not in covered]
+    return residual, strengths
+
+
+def agent_architecture_text(skills: list[str], need_flaws: list[str]) -> str:
+    """Human-readable architecture + the flaw/strength sentinel for scoring.
+
+    The prose reflects the covered failure modes for realism; ONLY the appended
+    sentinel drives the deterministic score (see :func:`score`).
+    """
+    residual, strengths = agent_architecture_flaws_strengths(skills, need_flaws)
+    covered = [f for f in need_flaws if f not in residual]
+    prose = (
+        "LangGraph StateGraph with typed GraphState: sensor_ingest -> "
+        "anomaly_detector -> root_cause_analyzer -> action_recommender"
+    )
+    if "no_hitl_escalation" not in residual and "unsafe_autonomy" not in residual:
+        prose += " -> safety_envelope_check -> hitl_review"
+    if covered:
+        prose += f". Mitigates: {', '.join(sorted(covered))}."
+    if residual:
+        prose += f" (residual risks: {', '.join(sorted(residual))})."
+    return f"{prose}\n{format_sentinel(residual, strengths)}"
+
+
+def agent_task_json(prompt: str) -> str:
+    """Build the mock task-agent JSON payload for a generation prompt.
+
+    Program-aware when the prompt carries the ``[[agent_skills:...]]`` /
+    ``[[need_flaws:...]]`` sentinels (the offline agent-evolution path); otherwise
+    the caller falls back to the legacy fixed architecture (hot-path back-compat).
+    """
+    import json as _json
+
+    skills = parse_agent_skills(prompt)
+    need_flaws = parse_need_flaws(prompt)
+    architecture = agent_architecture_text(skills, need_flaws)
+    residual, strengths = agent_architecture_flaws_strengths(skills, need_flaws)
+    nodes = ["sensor_ingest", "anomaly_detector", "root_cause_analyzer", "action_recommender"]
+    if "no_hitl_escalation" not in residual and "unsafe_autonomy" not in residual:
+        nodes += ["safety_envelope_check", "hitl_review"]
+    return _json.dumps(
+        {
+            "architecture": architecture,
+            "nodes": nodes,
+            "state_schema": {"sensor_window": "list[float]", "anomaly": "bool", "root_cause": "str"},
+            "tools": ["timeseries_stats", "physics_surrogate_model", "knowledge_base_lookup"],
+            "rationale": (
+                "Program-driven design: skills applied = "
+                f"{', '.join(sorted(set(skills))) or '(none)'}; strengths = "
+                f"{', '.join(strengths) or '(none)'}."
+            ),
+            "_mock": True,
+        }
+    )

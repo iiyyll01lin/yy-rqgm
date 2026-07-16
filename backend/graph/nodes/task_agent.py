@@ -2,16 +2,23 @@
 
 Uses the local model (Lemonade, mock fallback) and the routed template as a
 scaffold. Emits a natural-language architecture + a structured proposal.
+
+RQGM co-evolution: the agent persona/skills are no longer hard-coded here — the
+hot path loads the epoch-CHAMPION agent PROGRAM from
+:mod:`backend.agent.agent_versioning` (falling back to the immutable seed), so
+improvements the agent half evolves are actually adopted in production.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from backend.agent import agent_versioning
+from backend.agent.agent_generate import generate_architecture
+from backend.agent.agent_program import load_seed_program
 from backend.domains.registry import get_domain
 from backend.graph.state import GraphState
-from backend.inference.lemonade_client import MockMarker, get_lemonade_client
-from backend.inference.parsing import extract_json
+from backend.inference.lemonade_client import get_lemonade_client
 
 
 def _template_hint(domain_id: str | None, template_id: str | None) -> str:
@@ -37,28 +44,29 @@ def task_agent_node(state: GraphState) -> dict[str, Any]:
     trace = list(state.get("trace", []))
 
     client = get_lemonade_client()
-    system = (
-        f"{MockMarker.TASK_AGENT.value}\n"
-        "You are the Task Agent. Propose a concrete LangGraph agent architecture for the\n"
-        "stated need. Favor clear State Schemas, separation of concerns, physical\n"
-        "root-cause reasoning, and a deterministic safety gate for irreversible actions.\n"
-        "Respond with STRICT JSON: {\"architecture\": str, \"nodes\": [str], "
-        "\"state_schema\": {..}, \"tools\": [str], \"rationale\": str}."
-    )
-    user = f"Domain: {domain_id or 'general'}\nNeed: {need}{_template_hint(domain_id, template_id)}"
+    # Hot path adopts the current CHAMPION agent program (fallback: immutable seed).
+    try:
+        program = agent_versioning.get_champion_program()
+        program_version = agent_versioning.get_champion_version()
+    except Exception:
+        program, program_version = load_seed_program(), "agent-champion-0"
 
-    raw = client.chat(
-        [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=0.3,
-        max_tokens=900,
+    architecture, proposal = generate_architecture(
+        program,
+        need,
+        domain_id=domain_id,
+        template_hint=_template_hint(domain_id, template_id),
+        client=client,
     )
-    proposal = extract_json(raw) or {}
-    architecture = proposal.get("architecture") or raw.strip()
 
-    trace.append(f"task_agent: proposed architecture ({len(architecture)} chars)")
+    trace.append(
+        f"task_agent: proposed architecture ({len(architecture)} chars) "
+        f"via champion program {program_version}"
+    )
     return {
         "architecture": architecture,
         "proposal": proposal,
+        "agent_program_version": program_version,
         "used_mock": client.using_mock,
         "trace": trace,
     }

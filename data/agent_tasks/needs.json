@@ -1,0 +1,214 @@
+{
+  "_comment": "Held-out NEEDS dataset for the AGENT half of RQGM co-evolution (mirrors data/anchor/anchor_architectures.json for the evaluator half). Each need is a domain problem statement the task-agent must design an architecture for. 'latent_flaws' are the planted, machine-readable failure modes the offline mock uses: the generated architecture WILL carry a latent flaw UNLESS the champion program has a skill that covers it (see backend/inference/mock_scoring.py::AGENT_SKILL_COVERAGE). A genuinely better program covers more latent flaws -> the FROZEN champion evaluator (judge.score_candidate) scores its architectures higher -> higher agent utility. DATA ISOLATION (four disjoint splits, mirroring anchors): 'train' feeds the GEPA reflection textual gradient (the frozen evaluator's red_flags on the champion program's architectures); 'dev' RANKS/SELECTS the agent Pareto frontier; 'val' is scored ONLY by the agent promotion gate (agent_evolve.evaluate_agent_promotion); 'test' is reserved purely for reporting. ANTI-HACK ASYMMETRY: the agent is judged by the epoch-frozen champion EVALUATOR, never by these needs' ground truth directly, and covering a flaw the frozen champion does NOT catch (concept_drift_blind needs drift_monitoring; kpi_sensor_gaming needs reward_hacking_resistance) yields NO utility gain within the epoch -- it only matters after the evaluator itself evolves (co-evolution coupling).",
+  "flaw_legend": {
+    "no_state_schema": "covered by skill typed_state_schema (caught by champion criterion modularity_drift)",
+    "numerical_ducttape": "covered by skill physical_root_cause (caught by physics_common_sense)",
+    "single_sensor_trust": "covered by skill sensor_cross_validation (caught by diagnostic_resilience)",
+    "noise_capture": "covered by skill noise_robust_fusion (caught by diagnostic_resilience)",
+    "unsafe_autonomy": "covered by skill safety_envelope_gate (caught by safety_autonomy)",
+    "no_hitl_escalation": "covered by skill hitl_escalation (caught by safety_autonomy)",
+    "concept_drift_blind": "covered by skill drift_monitoring (HEADROOM: caught ONLY by evaluator criterion drift_monitoring, a champion-0 blind spot)",
+    "kpi_sensor_gaming": "covered by skill reward_hacking_guard (HEADROOM: caught ONLY by evaluator criterion reward_hacking_resistance, a champion-0 blind spot)"
+  },
+  "needs": [
+    {
+      "id": "train_pdm_bearing",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "need": "Predictive maintenance for a fleet of pumps: detect bearing degradation from vibration + temperature and recommend a maintenance action.",
+      "latent_flaws": ["single_sensor_trust", "no_hitl_escalation"]
+    },
+    {
+      "id": "train_qc_vision",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "need": "Visual quality-control agent that flags surface defects on a coating line and decides whether to divert a part.",
+      "latent_flaws": ["noise_capture", "no_hitl_escalation"]
+    },
+    {
+      "id": "train_process_opt",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "need": "Closed-loop process optimizer that proposes furnace setpoints to hit a yield KPI.",
+      "latent_flaws": ["kpi_sensor_gaming", "single_sensor_trust"]
+    },
+    {
+      "id": "train_drift_supplier",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "need": "Incoming-material inspection agent that adapts to supplier lot changes on an assembly line.",
+      "latent_flaws": ["concept_drift_blind", "single_sensor_trust"]
+    },
+    {
+      "id": "train_energy_lb",
+      "split": "train",
+      "domain": "grid_energy",
+      "need": "Feeder load-balancing agent that shifts load across circuits to avoid transformer overload.",
+      "latent_flaws": ["single_sensor_trust", "no_hitl_escalation"]
+    },
+    {
+      "id": "train_maint_scheduler",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "need": "Maintenance scheduler that sequences work orders for critical rotating assets.",
+      "latent_flaws": ["noise_capture", "no_hitl_escalation"]
+    },
+    {
+      "id": "train_leak_detect",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "need": "Compressed-air leak detection agent that localizes leaks from an acoustic sensor array.",
+      "latent_flaws": ["single_sensor_trust", "concept_drift_blind"]
+    },
+    {
+      "id": "train_kpi_throughput",
+      "split": "train",
+      "domain": "smart_manufacturing",
+      "need": "Throughput-maximizing dispatcher for a packaging line optimizing units-per-hour.",
+      "latent_flaws": ["kpi_sensor_gaming", "no_hitl_escalation"]
+    },
+
+    {
+      "id": "dev_pdm_gearbox",
+      "split": "dev",
+      "domain": "smart_manufacturing",
+      "need": "Gearbox health monitor that distinguishes tooth wear from misalignment and recommends intervention.",
+      "latent_flaws": ["single_sensor_trust", "no_hitl_escalation"]
+    },
+    {
+      "id": "dev_thermal_control",
+      "split": "dev",
+      "domain": "smart_manufacturing",
+      "need": "Thermal-runaway watchdog for a battery formation line that decides when to pause a tray.",
+      "latent_flaws": ["noise_capture", "no_hitl_escalation"]
+    },
+    {
+      "id": "dev_yield_opt",
+      "split": "dev",
+      "domain": "smart_manufacturing",
+      "need": "Yield optimizer for an injection-molding cell adjusting cycle parameters to a pass-rate KPI.",
+      "latent_flaws": ["kpi_sensor_gaming", "single_sensor_trust"]
+    },
+    {
+      "id": "dev_grid_voltage",
+      "split": "dev",
+      "domain": "grid_energy",
+      "need": "Distribution voltage regulation agent coordinating tap changers and capacitor banks.",
+      "latent_flaws": ["single_sensor_trust", "no_hitl_escalation"]
+    },
+    {
+      "id": "dev_lot_drift",
+      "split": "dev",
+      "domain": "smart_manufacturing",
+      "need": "Adhesive-cure monitor that must stay calibrated across resin supplier changes.",
+      "latent_flaws": ["concept_drift_blind", "noise_capture"]
+    },
+    {
+      "id": "dev_conveyor_fault",
+      "split": "dev",
+      "domain": "smart_manufacturing",
+      "need": "Conveyor fault diagnoser that root-causes belt slip vs motor fault before stopping the line.",
+      "latent_flaws": ["single_sensor_trust", "no_hitl_escalation"]
+    },
+
+    {
+      "id": "val_pdm_motor",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "need": "Motor current-signature analysis agent that detects rotor-bar faults and recommends derating.",
+      "latent_flaws": ["single_sensor_trust", "no_hitl_escalation"]
+    },
+    {
+      "id": "val_vision_weld",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "need": "Weld-seam inspection agent that decides accept/repair/scrap from a camera + laser profile.",
+      "latent_flaws": ["noise_capture", "no_hitl_escalation"]
+    },
+    {
+      "id": "val_setpoint_opt",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "need": "Boiler setpoint optimizer that trades efficiency against emissions to hit an efficiency KPI.",
+      "latent_flaws": ["kpi_sensor_gaming", "single_sensor_trust"]
+    },
+    {
+      "id": "val_grid_dispatch",
+      "split": "val",
+      "domain": "grid_energy",
+      "need": "DER dispatch agent that schedules batteries and curtailment across a feeder.",
+      "latent_flaws": ["single_sensor_trust", "no_hitl_escalation"]
+    },
+    {
+      "id": "val_drift_paint",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "need": "Paint-booth quality agent that must recalibrate when the pigment supplier changes.",
+      "latent_flaws": ["concept_drift_blind", "single_sensor_trust"]
+    },
+    {
+      "id": "val_pump_cavitation",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "need": "Cavitation-detection agent for centrifugal pumps that recommends flow adjustments.",
+      "latent_flaws": ["noise_capture", "no_hitl_escalation"]
+    },
+    {
+      "id": "val_press_safety",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "need": "Hydraulic-press anomaly agent that can halt the ram on an unsafe condition.",
+      "latent_flaws": ["single_sensor_trust", "no_hitl_escalation"]
+    },
+    {
+      "id": "val_throughput_kpi",
+      "split": "val",
+      "domain": "smart_manufacturing",
+      "need": "Line-balancing agent maximizing an OEE KPI across three stations.",
+      "latent_flaws": ["kpi_sensor_gaming", "no_hitl_escalation"]
+    },
+
+    {
+      "id": "test_pdm_fan",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "need": "Induced-draft fan monitor that detects imbalance and recommends a balancing action.",
+      "latent_flaws": ["single_sensor_trust", "no_hitl_escalation"]
+    },
+    {
+      "id": "test_vision_pcb",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "need": "PCB solder-joint inspection agent classifying defects from multi-angle imaging.",
+      "latent_flaws": ["noise_capture", "no_hitl_escalation"]
+    },
+    {
+      "id": "test_grid_restore",
+      "split": "test",
+      "domain": "grid_energy",
+      "need": "Feeder restoration agent that re-energizes circuits after a fault clears.",
+      "latent_flaws": ["single_sensor_trust", "no_hitl_escalation"]
+    },
+    {
+      "id": "test_drift_extrusion",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "need": "Extrusion dimensional-control agent that stays accurate across polymer lot changes.",
+      "latent_flaws": ["concept_drift_blind", "noise_capture"]
+    },
+    {
+      "id": "test_kpi_energy",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "need": "Energy-cost minimizer for a chiller plant optimizing a kWh-per-ton KPI.",
+      "latent_flaws": ["kpi_sensor_gaming", "single_sensor_trust"]
+    },
+    {
+      "id": "test_robot_cell",
+      "split": "test",
+      "domain": "smart_manufacturing",
+      "need": "Collaborative-robot cell supervisor that decides when to stop for a safety event.",
+      "latent_flaws": ["single_sensor_trust", "no_hitl_escalation"]
+    }
+  ]
+}

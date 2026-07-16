@@ -31,6 +31,13 @@ data/frontier/
 data/gate_sequential.json
 data/metrics/
 
+# RQGM AGENT-half runtime artifacts (champion seed lives in backend/agent/agent_program_seed.json;
+# the held-out needs dataset data/agent_tasks/needs.json IS tracked, like the anchors)
+data/agent_state.json
+data/agent_history/
+data/agent_archive/
+data/agent_frontier/
+
 # OS / editor
 .DS_Store
 *.swp

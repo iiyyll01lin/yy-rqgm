@@ -271,6 +271,14 @@ def _joined_prompt(messages: list[Message]) -> str:
 
 
 def _mock_task_agent(prompt: str) -> str:
+    # Program-aware path (agent-half co-evolution): if the generation prompt carries
+    # the agent-skill / need-flaw sentinels, produce an architecture whose planted
+    # flaws/strengths reflect the PROGRAM's skills (a better program => a better
+    # architecture the frozen evaluator scores higher). See mock_scoring.
+    if "[[agent_skills:" in prompt or "[[need_flaws:" in prompt:
+        from backend.inference import mock_scoring
+
+        return mock_scoring.agent_task_json(prompt)
     return json.dumps(
         {
             "architecture": (

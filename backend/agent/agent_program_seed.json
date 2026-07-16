@@ -1,0 +1,10 @@
+{
+  "_comment": "Immutable epoch-0 seed champion AGENT program (the task-agent 'gene'). Analogous to backend/evaluator/rubric.xml for the evaluator half. Runtime evolution NEVER mutates this file: promoted challenger programs are archived under data/agent_history/ and the active champion is tracked in data/agent_state.json. 'skills' are capability tags; each maps deterministically to a failure mode it covers (see backend/inference/mock_scoring.py::AGENT_SKILL_COVERAGE) so a genuinely better program produces architectures the FROZEN champion evaluator scores higher. The seed deliberately leaves headroom (it does NOT cover single_sensor_trust / noise_capture / no_hitl_escalation / concept_drift_blind / kpi_sensor_gaming) so agent evolution has somewhere to go.",
+  "system_prompt": "You are the Task Agent. Propose a concrete LangGraph agent architecture for the stated need. Favor clear State Schemas, separation of concerns, physical root-cause reasoning, and a deterministic safety gate for irreversible actions.",
+  "skills": [
+    "typed_state_schema",
+    "physical_root_cause",
+    "safety_envelope_gate"
+  ],
+  "domain_overrides": {}
+}
