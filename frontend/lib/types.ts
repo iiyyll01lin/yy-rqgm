@@ -270,7 +270,9 @@ export interface OverOptimization {
 /** One adversarial sample in the over-acceptance monitor. */
 export interface OverAcceptanceSample {
   id: string;
-  targets: string[];
+  // The live backend emits a single blind-spot id (string); Mock mode uses an
+  // array. Consumers must normalize to a list before rendering.
+  targets: string | string[];
   deficit: number;
   accepted_as_strong: boolean;
   out_of_catalog: boolean;

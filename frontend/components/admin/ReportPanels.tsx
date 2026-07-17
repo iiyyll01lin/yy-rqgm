@@ -291,7 +291,7 @@ export function OverAcceptanceCard({ data }: { data: OverAcceptance }) {
             <div className="flex min-w-0 items-center gap-1.5">
               <span
                 className="truncate font-mono text-[11px] text-zinc-300"
-                title={`${s.id} · targets: ${s.targets.join(", ")}`}
+                title={`${s.id} · targets: ${(Array.isArray(s.targets) ? s.targets : [s.targets]).join(", ")}`}
               >
                 {s.id}
               </span>
